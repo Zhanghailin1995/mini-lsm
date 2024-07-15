@@ -85,8 +85,7 @@ func (lsm *LsmStorageInner) tryFreeze(estimatedSize uint32) error {
 }
 
 func (lsm *LsmStorageInner) getNextSstId() uint32 {
-	sstId := atomic.LoadUint32(&lsm.nextSstId)
-	atomic.AddUint32(&lsm.nextSstId, 1)
+	sstId := atomic.AddUint32(&lsm.nextSstId, 1) - 1
 	return sstId
 }
 
@@ -96,6 +95,7 @@ func (lsm *LsmStorageInner) ForceFreezeMemTable() error {
 
 	lsm.rwLock.Lock()
 	defer lsm.rwLock.Unlock()
+	// 使用快照机制来减少锁的粒度
 	snapshot := lsm.state.snapshot()
 	snapshot.immMemTable = append([]*MemTable{snapshot.memTable}, snapshot.immMemTable...)
 	snapshot.memTable = memtable
@@ -107,6 +107,9 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 	lsm.rwLock.RLock()
 	snapshot := lsm.state
 	lsm.rwLock.RUnlock()
+	// 在读取时我们只需要获取读时快照就行了，这避免了长时间持久锁，我们使用写时复制的方法
+	// 写数据时会复制一份状态副本（非数据副本），通过在副本上更新数据，更新完成后将原状态替换为副本（写时持有写锁，所以不用担心数据竞争问题）
+	// 读取时我们只需要获取状态副本并且保持为一个本地变量，这样就不会受到写时复制的影响
 	v := snapshot.memTable.Get(key)
 	// 空值和nil值的区别
 	// length 为 0的空值代表数据被删除了，nil值代表数据根本不存在

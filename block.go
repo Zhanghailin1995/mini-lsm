@@ -1,0 +1,224 @@
+package mini_lsm
+
+import (
+	"bytes"
+	"encoding/binary"
+	"github.com/Zhanghailin1995/mini-lsm/utils"
+	"unsafe"
+)
+
+const (
+	SizeOfU16 = uint16(unsafe.Sizeof(uint16(0)))
+)
+
+type Block struct {
+	data    []byte
+	offsets []uint16
+}
+
+func (b *Block) Encode() []byte {
+	estimatedSize := b.estimatedSize()
+	rawBuffer := make([]byte, 0, utils.RoundUpToPowerOfTwo(uint64(estimatedSize)))
+	buf := bytes.NewBuffer(rawBuffer)
+	buf.Write(b.data)
+	for _, offset := range b.offsets {
+		err := binary.Write(buf, binary.BigEndian, offset)
+		if err != nil {
+			panic(err)
+		}
+	}
+	err := binary.Write(buf, binary.BigEndian, uint16(len(b.offsets)))
+	if err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func DecodeBlock(data []byte) *Block {
+	// 从buf的最后两个字节读取offsets的长度
+	entryOffsetsLen := binary.BigEndian.Uint16(data[len(data)-int(SizeOfU16):])
+	dataEnd := len(data) - int(SizeOfU16) - int(entryOffsetsLen)*int(SizeOfU16)
+	offsetsRawBuf := data[dataEnd : len(data)-int(SizeOfU16)]
+	offsets := make([]uint16, entryOffsetsLen)
+	for i := 0; i < int(entryOffsetsLen); i++ {
+		offsets[i] = binary.BigEndian.Uint16(offsetsRawBuf[i*int(SizeOfU16) : (i+1)*int(SizeOfU16)])
+	}
+	block := &Block{
+		data:    utils.Copy(data[:dataEnd]),
+		offsets: offsets,
+	}
+	return block
+}
+
+func (b *Block) estimatedSize() int {
+	return len(b.data) + len(b.offsets)*int(SizeOfU16) + int(SizeOfU16)
+}
+
+type BlockBuilder struct {
+	offsets   []uint16
+	data      []byte
+	blockSize uint32
+	firstKey  KeyType
+}
+
+func NewBlockBuilder(blockSize uint32) *BlockBuilder {
+	return &BlockBuilder{
+		offsets:   make([]uint16, 0, 256),
+		data:      make([]byte, 0, utils.RoundUpToPowerOfTwo(uint64(blockSize))), // power of 2
+		blockSize: blockSize,
+		firstKey:  Key([]byte{}),
+	}
+}
+
+func (b *BlockBuilder) estimatedSize() uint32 {
+	// 2 表示 block有多少个entry
+	return uint32(SizeOfU16) + uint32(len(b.data)) + uint32(len(b.offsets))*uint32(SizeOfU16)
+}
+
+func (b *BlockBuilder) Add(key KeyType, value []byte) bool {
+	utils.Assert(len(key.Val) != 0, "key must not be empty")
+	// 为什么要加self.is_empty()判断
+	// 如果一个大key-value对加入到一个空的block中，会导致block的大小超过block_size
+	// 那么应该允许其加入，否则会导致该key-value一直无法写入，block size是软限制，并非一定不可以超过
+	// 2 * 3 一个key len 一个 value len 一个offset
+	if b.estimatedSize()+uint32(len(key.Val)+len(value)+int(SizeOfU16)*3) > b.blockSize && !b.isEmpty() {
+		return false
+	}
+
+	b.offsets = append(b.offsets, uint16(len(b.data)))
+	// put key len
+	idx := len(b.data)
+	b.data = append(b.data, make([]byte, SizeOfU16)...)
+	binary.BigEndian.PutUint16(b.data[idx:idx+int(SizeOfU16)], uint16(len(key.Val)))
+	idx += int(SizeOfU16)
+
+	// put key
+	b.data = append(b.data, key.Val...)
+	idx += len(key.Val)
+
+	// put value len
+	b.data = append(b.data, make([]byte, SizeOfU16)...)
+	binary.BigEndian.PutUint16(b.data[idx:idx+int(SizeOfU16)], uint16(len(value)))
+	idx += int(SizeOfU16)
+
+	// put value
+	b.data = append(b.data, value...)
+	if len(b.firstKey.Val) == 0 {
+		b.firstKey = Key(utils.Copy(key.Val))
+	}
+	return true
+}
+
+func (b *BlockBuilder) isEmpty() bool {
+	return len(b.offsets) == 0
+}
+
+func (b *BlockBuilder) Build() *Block {
+	if b.isEmpty() {
+		panic("block should not be empty")
+	}
+	block := &Block{
+		data:    b.data,
+		offsets: b.offsets,
+	}
+	b.offsets = nil
+	b.data = nil
+	b.blockSize = 0
+	b.firstKey = Key(nil)
+	return block
+}
+
+type BlockIterator struct {
+	block      *Block
+	key        KeyType
+	valueStart int
+	valueEnd   int
+	idx        int
+	firstKey   KeyType
+}
+
+func NewBlockIterator(block *Block) *BlockIterator {
+	return &BlockIterator{
+		block:      block,
+		key:        Key([]byte{}),
+		valueStart: 0,
+		valueEnd:   0,
+		idx:        0,
+		firstKey:   Key([]byte{}),
+	}
+}
+
+func (b *Block) CreateIteratorAndSeekToFirst() *BlockIterator {
+	bi := NewBlockIterator(b)
+	bi.SeekToFirst()
+	return bi
+}
+
+func (b *Block) CreateIteratorAndSeekToKey(key KeyType) *BlockIterator {
+	bi := NewBlockIterator(b)
+	bi.SeekToKey(key)
+	return bi
+}
+
+func (b *BlockIterator) Key() KeyType {
+	return b.key
+}
+
+func (b *BlockIterator) Value() []byte {
+	return b.block.data[b.valueStart:b.valueEnd]
+
+}
+
+func (b *BlockIterator) SeekToFirst() {
+	b.seekTo(0)
+}
+
+func (b *BlockIterator) seekToOffset(offset int) {
+	entry := b.block.data[offset:]
+	keyLen := int(binary.BigEndian.Uint16(entry))
+	key := entry[SizeOfU16 : int(SizeOfU16)+keyLen]
+	b.key = Key(utils.Copy(key))
+	valueLen := int(binary.BigEndian.Uint16(entry[int(SizeOfU16)+keyLen:]))
+	b.valueStart = offset + int(SizeOfU16) + keyLen + int(SizeOfU16)
+	b.valueEnd = b.valueStart + valueLen
+}
+
+func (b *BlockIterator) seekTo(idx int) {
+	if idx >= len(b.block.offsets) {
+		b.key = Key([]byte{})
+		b.valueStart = 0
+		b.valueEnd = 0
+		return
+	}
+	offset := int(b.block.offsets[idx])
+	b.seekToOffset(offset)
+	b.idx = idx
+}
+
+func (b *BlockIterator) IsValid() bool {
+	return b.key.Val != nil && len(b.key.Val) != 0
+}
+
+func (b *BlockIterator) Next() {
+	b.idx++
+	b.seekTo(b.idx)
+}
+
+func (b *BlockIterator) SeekToKey(key KeyType) {
+	low := 0
+	high := len(b.block.offsets)
+	for low < high {
+		mid := low + (high-low)/2
+		b.seekTo(mid)
+		utils.Assert(b.IsValid(), "block iterator is invalid")
+		cmp := bytes.Compare(b.key.Val, key.Val)
+		if cmp < 0 {
+			low = mid + 1
+		} else if cmp > 0 {
+			high = mid
+		} else {
+			return
+		}
+	}
+	b.seekTo(low)
+}

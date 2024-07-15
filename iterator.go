@@ -12,6 +12,12 @@ func Key(v []byte) KeyType {
 	}
 }
 
+func StringKey(v string) KeyType {
+	return KeyType{
+		Val: []byte(v),
+	}
+}
+
 type StorageIterator interface {
 
 	// Value Get the current value
