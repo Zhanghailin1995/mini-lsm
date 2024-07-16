@@ -115,3 +115,10 @@ func TestBlockSeekKey(t *testing.T) {
 		iter.SeekToKey(StringKey("k"))
 	}
 }
+
+//func TestSlice(t *testing.T) {
+//	s := []int{1, 2, 3, 4, 5}
+//	s1 := s[1:3]
+//	s1 = append(s1, 6)
+//	t.Log(s)
+//}

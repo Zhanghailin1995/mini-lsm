@@ -96,42 +96,66 @@ func Unbound() KeyBound {
 }
 
 type MemTableIterator struct {
-	ele   *skiplist.Element
-	upper KeyBound
+	ele          *skiplist.Element
+	upper        KeyBound
+	currentKey   KeyType
+	currentValue []byte
+}
+
+func newMemTableIterator(ele *skiplist.Element, upper KeyBound) *MemTableIterator {
+	var k KeyType
+	var v []byte
+	if ele != nil {
+		k = Key(utils.Copy(ele.Key().(KeyType).Val))
+		v = utils.Copy(ele.Value.([]byte))
+	} else {
+		k = KeyType{Val: []byte{}}
+		v = nil
+	}
+	m := &MemTableIterator{
+		ele:          ele,
+		upper:        upper,
+		currentKey:   k,
+		currentValue: v,
+	}
+	return m
 }
 
 func CreateMemTableIterator(list *skiplist.SkipList, lower, upper KeyBound) *MemTableIterator {
 	if lower.Type == Unbounded {
-		return &MemTableIterator{ele: list.Front(), upper: upper}
+		// return &MemTableIterator{ele: list.Front(), upper: upper}
+		return newMemTableIterator(list.Front(), upper)
 	} else if lower.Type == Included {
-		return &MemTableIterator{ele: list.Find(lower.Val), upper: upper}
+		// return &MemTableIterator{ele: list.Find(lower.Val), upper: upper}
+		return newMemTableIterator(list.Find(lower.Val), upper)
 	} else {
 		ele := list.Find(lower.Val)
 		if ele != nil {
 			ele = ele.Next()
 		}
-		return &MemTableIterator{ele: ele, upper: upper}
+		return newMemTableIterator(ele, upper)
 	}
 }
 
 func (m *MemTableIterator) Value() []byte {
-	v := m.ele.Value.([]byte)
-	return utils.Copy(v)
+	v := m.currentValue
+	return v
 }
 
 func (m *MemTableIterator) Key() KeyType {
-	k := m.ele.Key().(KeyType)
-	return KeyType{Val: utils.Copy(k.Val)}
+	k := m.currentKey
+	return k
 }
 
 func (m *MemTableIterator) IsValid() bool {
-	return m.ele != nil && len(m.ele.Key().(KeyType).Val) != 0
+	return len(m.currentKey.Val) != 0
 }
 
 func (m *MemTableIterator) Next() error {
 	m.ele = m.ele.Next()
 	if m.ele != nil {
 		if m.upper.Type == Unbounded {
+			m.currentKey, m.currentValue = entryToKeyAndValue(m.ele)
 			return nil
 		}
 		compare := bytes.Compare(m.ele.Key().(KeyType).Val, m.upper.Val.Val)
@@ -141,7 +165,16 @@ func (m *MemTableIterator) Next() error {
 			m.ele = nil
 		}
 	}
+	m.currentKey, m.currentValue = entryToKeyAndValue(m.ele)
 	return nil
+}
+
+func entryToKeyAndValue(entry *skiplist.Element) (KeyType, []byte) {
+	if entry == nil {
+		return KeyType{Val: []byte{}}, nil
+	} else {
+		return Key(utils.Copy(entry.Key().(KeyType).Val)), utils.Copy(entry.Value.([]byte))
+	}
 }
 
 func (m *MemTableIterator) NumActiveIterators() int {

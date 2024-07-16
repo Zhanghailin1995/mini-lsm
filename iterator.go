@@ -1,9 +1,26 @@
 package mini_lsm
 
-import "github.com/Zhanghailin1995/mini-lsm/utils"
+import (
+	"bytes"
+	"github.com/Zhanghailin1995/mini-lsm/utils"
+)
 
 type KeyType struct {
 	Val []byte
+}
+
+type Comparable interface {
+	Compare(Comparable) int
+}
+
+func (k KeyType) Compare(other Comparable) int {
+	return bytes.Compare(k.Val, other.(KeyType).Val)
+}
+
+func (k KeyType) Clone() KeyType {
+	return KeyType{
+		Val: utils.Copy(k.Val),
+	}
 }
 
 func Key(v []byte) KeyType {
