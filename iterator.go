@@ -9,6 +9,10 @@ type KeyType struct {
 	Val []byte
 }
 
+type KeyValuePair [][]byte
+
+type StringKeyValuePair []string
+
 type Comparable interface {
 	Compare(Comparable) int
 }
@@ -51,4 +55,15 @@ type StorageIterator interface {
 
 	// NumActiveIterators Number of underlying active iterators for this iterator
 	NumActiveIterators() int
+}
+
+func PrintIter(iter StorageIterator) {
+	println()
+	println("================================")
+	for iter.IsValid() {
+		println(string(iter.Key().Val), string(iter.Value()))
+		iter.Next()
+	}
+	println("================================")
+	println()
 }

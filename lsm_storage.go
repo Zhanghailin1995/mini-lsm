@@ -2,6 +2,7 @@ package mini_lsm
 
 import (
 	"github.com/Zhanghailin1995/mini-lsm/utils"
+	"github.com/sirupsen/logrus"
 	"sync"
 	"sync/atomic"
 )
@@ -11,25 +12,36 @@ type MiniLsm struct {
 }
 
 type LsmStorageInner struct {
-	rwLock    sync.RWMutex
-	stateLock sync.Mutex
-	path      string
-	nextSstId uint32
-	state     *LsmStorageState
-	options   *LsmStorageOptions
+	rwLock     sync.RWMutex
+	stateLock  sync.Mutex
+	path       string
+	blockCache *BlockCache
+	nextSstId  uint32
+	state      *LsmStorageState
+	options    *LsmStorageOptions
 }
 
 type LsmStorageState struct {
 	memTable    *MemTable
 	immMemTable []*MemTable
+	l0SsTables  []uint32
+	sstables    map[uint32]*SsTable
 }
 
 func (lsm *LsmStorageState) snapshot() *LsmStorageState {
 	immMemtable := make([]*MemTable, len(lsm.immMemTable))
 	copy(immMemtable, lsm.immMemTable)
+	l0SsTables := make([]uint32, len(lsm.l0SsTables))
+	copy(l0SsTables, lsm.l0SsTables)
+	sstables := make(map[uint32]*SsTable)
+	for k, v := range lsm.sstables {
+		sstables[k] = v
+	}
 	return &LsmStorageState{
 		memTable:    lsm.memTable,
 		immMemTable: immMemtable,
+		l0SsTables:  l0SsTables,
+		sstables:    sstables,
 	}
 }
 
@@ -37,6 +49,8 @@ func CreateLsmStorageState(options *LsmStorageOptions) *LsmStorageState {
 	return &LsmStorageState{
 		memTable:    CreateMemTable(0),
 		immMemTable: make([]*MemTable, 0),
+		l0SsTables:  make([]uint32, 0),
+		sstables:    make(map[uint32]*SsTable),
 	}
 }
 
@@ -63,12 +77,23 @@ func DefaultForWeek1Test() *LsmStorageOptions {
 
 func OpenLsmStorageInner(path string, options *LsmStorageOptions) (*LsmStorageInner, error) {
 	storage := &LsmStorageInner{
-		state:     CreateLsmStorageState(options),
-		path:      path,
-		nextSstId: 0,
-		options:   options,
+		state:      CreateLsmStorageState(options),
+		path:       path,
+		blockCache: NewBlockCache(),
+		nextSstId:  0,
+		options:    options,
 	}
 	return storage, nil
+}
+
+func (lsm *LsmStorageInner) Close() error {
+	for id, sst := range lsm.state.sstables {
+		err := sst.CloseSstFile()
+		if err != nil {
+			logrus.Errorf("close sst file %d error: %v", id, err)
+		}
+	}
+	return nil
 }
 
 func (lsm *LsmStorageInner) tryFreeze(estimatedSize uint32) error {
@@ -127,6 +152,19 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 			return v, nil
 		}
 	}
+	iters := make([]StorageIterator, 0, len(snapshot.l0SsTables))
+	for _, id := range snapshot.l0SsTables {
+		sstIter, err := CreateSsTableIteratorAndSeekToKey(snapshot.sstables[id], key)
+		if err != nil {
+			return nil, err
+		}
+		iters = append(iters, sstIter)
+	}
+	mergeIter := CreateMergeIterator(iters)
+	if mergeIter.IsValid() && mergeIter.Key().Compare(key) == 0 && len(mergeIter.Value()) > 0 {
+		return utils.Copy(mergeIter.Value()), nil
+	}
+
 	return nil, nil
 }
 
@@ -179,8 +217,46 @@ func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) 
 	for _, mt := range snapshot.immMemTable {
 		memtableIters = append(memtableIters, mt.Scan(lower, upper))
 	}
-	mergeIter := CreateMergeIterator(memtableIters)
-	lsmIterator, err := CreateLsmIterator(mergeIter)
+	memtableMergeIter := CreateMergeIterator(memtableIters)
+
+	var sstableIters = make([]StorageIterator, 0, len(snapshot.l0SsTables))
+	for _, id := range snapshot.l0SsTables {
+		sst := snapshot.sstables[id]
+		var sstableIter *SsTableIterator
+		var err error
+		if lower.Type == Included {
+			sstableIter, err = CreateSsTableIteratorAndSeekToKey(sst, lower.Val)
+			if err != nil {
+				return nil, err
+			}
+		} else if lower.Type == Excluded {
+			sstableIter, err = CreateSsTableIteratorAndSeekToKey(sst, lower.Val)
+			if err != nil {
+				return nil, err
+			}
+			if sstableIter.IsValid() && sstableIter.Key().Compare(lower.Val) == 0 {
+				err := sstableIter.Next()
+				if err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			sstableIter, err = CreateSsTableIteratorAndSeekToFirst(sst)
+			if err != nil {
+				return nil, err
+			}
+		}
+		sstableIters = append(sstableIters, sstableIter)
+
+	}
+
+	sstMergeIter := CreateMergeIterator(sstableIters)
+
+	iter, err := CreateTwoMergeIterator(memtableMergeIter, sstMergeIter)
+	if err != nil {
+		return nil, err
+	}
+	lsmIterator, err := CreateLsmIterator(iter, upper)
 	if err != nil {
 		return nil, err
 	}

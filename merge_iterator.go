@@ -1,7 +1,6 @@
 package mini_lsm
 
 import (
-	"bytes"
 	"container/heap"
 )
 
@@ -11,7 +10,8 @@ type HeapWrapper struct {
 }
 
 func (h *HeapWrapper) Compare(other *HeapWrapper) int {
-	res := bytes.Compare(h.iter.Key().Val, other.iter.Key().Val)
+	//res := bytes.Compare(h.iter.Key().Val, other.iter.Key().Val)
+	res := h.iter.Key().Compare(other.iter.Key())
 	if res == 0 {
 		if h.idx < other.idx {
 			return -1
@@ -30,7 +30,8 @@ type IterBinaryHeap []*HeapWrapper
 func (h IterBinaryHeap) Len() int { return len(h) }
 
 func (h IterBinaryHeap) Less(i, j int) bool {
-	res := bytes.Compare(h[i].iter.Key().Val, h[j].iter.Key().Val)
+	//res := bytes.Compare(h[i].iter.Key().Val, h[j].iter.Key().Val)
+	res := h[i].iter.Key().Compare(h[j].iter.Key())
 	if res == 0 {
 		return h[i].idx < h[j].idx
 	}
@@ -124,11 +125,11 @@ func (m *MergeIterator) Next() error {
 		innerIter := heap.Pop(&m.iters).(*HeapWrapper)
 		//println("1inner:", string(innerIter.iter.Key().Val), innerIter.idx)
 		//println("1curr:", string(m.current.iter.Key().Val), m.current.idx)
-		//logrus.Printf("innerIter: %s, current: %s", string(innerIter.iter.Key().Val), string(m.current.iter.Key().Val))
-		if bytes.Compare(innerIter.iter.Key().Val, m.current.iter.Key().Val) < 0 {
+		if innerIter.iter.Key().Compare(m.current.iter.Key()) < 0 {
 			panic("invalid key order")
 		}
-		if bytes.Compare(innerIter.iter.Key().Val, m.current.iter.Key().Val) == 0 {
+		if innerIter.iter.Key().Compare(m.current.iter.Key()) == 0 {
+			//if bytes.Compare(innerIter.iter.Key().Val, m.current.iter.Key().Val) == 0 {
 			if err := innerIter.iter.Next(); err != nil {
 				return err
 			}

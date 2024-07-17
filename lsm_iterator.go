@@ -2,15 +2,21 @@ package mini_lsm
 
 import "errors"
 
-type LsmIteratorInner = MergeIterator
+// a: MergeIterator<MemTableIterator>
+// b: MergeIterator<SsTableIterator>
+type LsmIteratorInner = TwoMergeIterator
 
 type LsmIterator struct {
-	inner *LsmIteratorInner
+	inner    *LsmIteratorInner
+	endBound KeyBound
+	isValid  bool
 }
 
-func CreateLsmIterator(iter *LsmIteratorInner) (*LsmIterator, error) {
+func CreateLsmIterator(iter *LsmIteratorInner, endBound KeyBound) (*LsmIterator, error) {
 	l := &LsmIterator{
-		inner: iter,
+		inner:    iter,
+		isValid:  iter.IsValid(),
+		endBound: endBound,
 	}
 	err := l.moveToNonDelete()
 	if err != nil {
@@ -35,6 +41,22 @@ func (l *LsmIterator) moveToNonDelete() error {
 	return nil
 }
 
+func (l *LsmIterator) nextInner() error {
+	if err := l.inner.Next(); err != nil {
+		return err
+	}
+	if !l.inner.IsValid() {
+		l.isValid = false
+		return nil
+	}
+	if l.endBound.Type == Included {
+		l.isValid = l.inner.Key().Compare(l.endBound.Val) <= 0
+	} else if l.endBound.Type == Excluded {
+		l.isValid = l.inner.Key().Compare(l.endBound.Val) < 0
+	}
+	return nil
+}
+
 func (l *LsmIterator) NumActiveIterators() int {
 	return l.inner.NumActiveIterators()
 }
@@ -48,12 +70,11 @@ func (l *LsmIterator) Value() []byte {
 }
 
 func (l *LsmIterator) IsValid() bool {
-	return l.inner.IsValid()
+	return l.isValid
 }
 
 func (l *LsmIterator) Next() error {
-	err := l.inner.Next()
-	if err != nil {
+	if err := l.nextInner(); err != nil {
 		return err
 	}
 	return l.moveToNonDelete()

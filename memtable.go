@@ -1,7 +1,6 @@
 package mini_lsm
 
 import (
-	"bytes"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
 	"github.com/huandu/skiplist"
 	"sync"
@@ -16,7 +15,7 @@ type MemTable struct {
 }
 
 var CompareKeyFunc = skiplist.GreaterThanFunc(func(a, b interface{}) int {
-	return bytes.Compare(a.(KeyType).Val, b.(KeyType).Val)
+	return a.(KeyType).Compare(b.(KeyType))
 })
 
 func CreateMemTable(id uint32) *MemTable {
@@ -130,7 +129,7 @@ func CreateMemTableIterator(list *skiplist.SkipList, lower, upper KeyBound) *Mem
 		return newMemTableIterator(list.Find(lower.Val), upper)
 	} else {
 		ele := list.Find(lower.Val)
-		if ele != nil {
+		if ele != nil && ele.Key().(KeyType).Compare(lower.Val) == 0 {
 			ele = ele.Next()
 		}
 		return newMemTableIterator(ele, upper)
@@ -158,7 +157,8 @@ func (m *MemTableIterator) Next() error {
 			m.currentKey, m.currentValue = entryToKeyAndValue(m.ele)
 			return nil
 		}
-		compare := bytes.Compare(m.ele.Key().(KeyType).Val, m.upper.Val.Val)
+		//compare := bytes.Compare(m.ele.Key().(KeyType).Val, m.upper.Val.Val)
+		compare := m.ele.Key().(KeyType).Compare(m.upper.Val)
 		if m.upper.Type == Excluded && compare == 0 {
 			m.ele = nil
 		} else if compare == 1 {
