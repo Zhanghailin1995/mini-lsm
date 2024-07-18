@@ -75,5 +75,5 @@ func (t *TwoMergeIterator) Next() error {
 }
 
 func (t *TwoMergeIterator) NumActiveIterators() int {
-	return 1
+	return t.a.NumActiveIterators() + t.b.NumActiveIterators()
 }

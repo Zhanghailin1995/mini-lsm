@@ -1,14 +1,55 @@
 package mini_lsm
 
 import (
+	"fmt"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
 	"github.com/sirupsen/logrus"
+	"path"
 	"sync"
 	"sync/atomic"
 )
 
 type MiniLsm struct {
 	inner *LsmStorageInner
+	// Notifies the L0 flush thread to stop working.
+	flushShutdownNotifier     chan struct{}
+	flushShutdownDoneNotifier chan struct{}
+}
+
+func (lsm *MiniLsm) Shutdown() error {
+	lsm.flushShutdownNotifier <- struct{}{}
+	<-lsm.flushShutdownDoneNotifier
+	return lsm.inner.Close()
+}
+
+func Open(p string, options *LsmStorageOptions) (*MiniLsm, error) {
+	inner, err := OpenLsmStorageInner(p, options)
+	if err != nil {
+		return nil, err
+	}
+	lsm := &MiniLsm{
+		inner:                     inner,
+		flushShutdownNotifier:     make(chan struct{}),
+		flushShutdownDoneNotifier: make(chan struct{}),
+	}
+	inner.SpawnFlushThread(lsm.flushShutdownNotifier, lsm.flushShutdownDoneNotifier)
+	return lsm, nil
+}
+
+func (lsm *MiniLsm) Get(key []byte) ([]byte, error) {
+	return lsm.inner.Get(Key(key))
+}
+
+func (lsm *MiniLsm) Put(key, value []byte) error {
+	return lsm.inner.Put(Key(key), value)
+}
+
+func (lsm *MiniLsm) Delete(key []byte) error {
+	return lsm.inner.Delete(Key(key))
+}
+
+func (lsm *MiniLsm) Scan(lower, upper BytesBound) (*FusedIterator, error) {
+	return lsm.inner.Scan(MapBound(lower), MapBound(upper))
 }
 
 type LsmStorageInner struct {
@@ -75,24 +116,51 @@ func DefaultForWeek1Test() *LsmStorageOptions {
 	}
 }
 
+func DefaultForWeek1Day6Test() *LsmStorageOptions {
+	return &LsmStorageOptions{
+		blockSize:           4096,
+		targetSstSize:       2 << 20,
+		numberMemTableLimit: 2,
+		compactionOptions: &CompactionOptions{
+			compactionType: NoCompaction,
+			opt:            nil,
+		},
+		enableWal: false,
+	}
+}
+
 func OpenLsmStorageInner(path string, options *LsmStorageOptions) (*LsmStorageInner, error) {
+
+	// if path is not exist, create it
+	err := utils.CreateDirIfNotExist(path)
+	if err != nil {
+		return nil, err
+	}
+
 	storage := &LsmStorageInner{
 		state:      CreateLsmStorageState(options),
 		path:       path,
 		blockCache: NewBlockCache(),
-		nextSstId:  0,
+		nextSstId:  1,
 		options:    options,
 	}
 	return storage, nil
 }
 
 func (lsm *LsmStorageInner) Close() error {
-	for id, sst := range lsm.state.sstables {
+	lsm.stateLock.Lock()
+	lsm.rwLock.Lock()
+	snapshot := lsm.state.snapshot()
+	// 这里有数据竞争的问题，需要考虑一下，在rust中可以使用drop机制来关闭file
+	for id, sst := range snapshot.sstables {
 		err := sst.CloseSstFile()
 		if err != nil {
 			logrus.Errorf("close sst file %d error: %v", id, err)
 		}
 	}
+	lsm.state = snapshot
+	lsm.rwLock.Unlock()
+	lsm.stateLock.Unlock()
 	return nil
 }
 
@@ -128,6 +196,60 @@ func (lsm *LsmStorageInner) ForceFreezeMemTable() error {
 	return nil
 }
 
+func (lsm *LsmStorageInner) ForceFlushNextImmMemtable() error {
+	lsm.stateLock.Lock()
+	defer lsm.stateLock.Unlock()
+
+	var flushMemtable *MemTable
+	{
+		lsm.rwLock.RLock()
+		if len(lsm.state.immMemTable) == 0 {
+			panic("no imm memtable to flush")
+		}
+		flushMemtable = lsm.state.immMemTable[len(lsm.state.immMemTable)-1]
+		lsm.rwLock.RUnlock()
+	}
+
+	builder := NewSsTableBuilder(lsm.options.blockSize)
+	err := flushMemtable.Flush(builder)
+	if err != nil {
+		return err
+	}
+	sstId := flushMemtable.id
+	sst, err := builder.Build(sstId, lsm.blockCache, lsm.pathOfSst(sstId))
+	if err != nil {
+		return err
+	}
+
+	{
+		lsm.rwLock.Lock()
+		snapshot := lsm.state.snapshot()
+		// remove the memtable from the immMemTable
+		mem := snapshot.immMemTable[len(snapshot.immMemTable)-1]
+		snapshot.immMemTable = snapshot.immMemTable[:len(snapshot.immMemTable)-1]
+		utils.Assert(mem.id == sstId, "sst id not match")
+		snapshot.l0SsTables = append([]uint32{sstId}, snapshot.l0SsTables...)
+		fmt.Printf("flushed %d.sst with size=%d\r\n", sstId, sst.TableSize())
+		snapshot.sstables[sstId] = sst
+		lsm.state = snapshot
+		lsm.rwLock.Unlock()
+	}
+	return nil
+
+}
+
+func pathOfSstStatic(path0 string, id uint32) string {
+	return path.Join(path0, fmt.Sprintf("%05d.sst", id))
+}
+
+func (lsm *LsmStorageInner) pathOfSst(id uint32) string {
+	return pathOfSstStatic(lsm.path, id)
+}
+
+func keyWithin(userKey, tableBegin, tableEnd KeyType) bool {
+	return tableBegin.Compare(userKey) <= 0 && userKey.Compare(tableEnd) <= 0
+}
+
 func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 	lsm.rwLock.RLock()
 	snapshot := lsm.state
@@ -154,11 +276,14 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 	}
 	iters := make([]StorageIterator, 0, len(snapshot.l0SsTables))
 	for _, id := range snapshot.l0SsTables {
-		sstIter, err := CreateSsTableIteratorAndSeekToKey(snapshot.sstables[id], key)
-		if err != nil {
-			return nil, err
+		sst := snapshot.sstables[id]
+		if keyWithin(key, *sst.FirstKey(), *sst.LastKey()) {
+			sstIter, err := CreateSsTableIteratorAndSeekToKey(snapshot.sstables[id], key)
+			if err != nil {
+				return nil, err
+			}
+			iters = append(iters, sstIter)
 		}
-		iters = append(iters, sstIter)
 	}
 	mergeIter := CreateMergeIterator(iters)
 	if mergeIter.IsValid() && mergeIter.Key().Compare(key) == 0 && len(mergeIter.Value()) > 0 {
@@ -206,6 +331,21 @@ func (lsm *LsmStorageInner) Delete(key KeyType) error {
 	return nil
 }
 
+func rangeOverlap(userBegin, userEnd KeyBound, tableBegin, tableEnd KeyType) bool {
+	if userEnd.Type == Excluded && userEnd.Val.Compare(tableBegin) <= 0 {
+		return false
+	} else if userEnd.Type == Included && userEnd.Val.Compare(tableBegin) < 0 {
+		return false
+	}
+	if userBegin.Type == Excluded && userBegin.Val.Compare(tableEnd) >= 0 {
+		return false
+	} else if userBegin.Type == Included && userBegin.Val.Compare(tableEnd) > 0 {
+		return false
+	}
+
+	return true
+}
+
 func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) {
 	// 才用写时复制的策略，避免一直持有锁
 	lsm.rwLock.RLock()
@@ -222,32 +362,33 @@ func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) 
 	var sstableIters = make([]StorageIterator, 0, len(snapshot.l0SsTables))
 	for _, id := range snapshot.l0SsTables {
 		sst := snapshot.sstables[id]
-		var sstableIter *SsTableIterator
-		var err error
-		if lower.Type == Included {
-			sstableIter, err = CreateSsTableIteratorAndSeekToKey(sst, lower.Val)
-			if err != nil {
-				return nil, err
-			}
-		} else if lower.Type == Excluded {
-			sstableIter, err = CreateSsTableIteratorAndSeekToKey(sst, lower.Val)
-			if err != nil {
-				return nil, err
-			}
-			if sstableIter.IsValid() && sstableIter.Key().Compare(lower.Val) == 0 {
-				err := sstableIter.Next()
+		if rangeOverlap(lower, upper, *sst.FirstKey(), *sst.LastKey()) {
+			var sstableIter *SsTableIterator
+			var err error
+			if lower.Type == Included {
+				sstableIter, err = CreateSsTableIteratorAndSeekToKey(sst, lower.Val)
+				if err != nil {
+					return nil, err
+				}
+			} else if lower.Type == Excluded {
+				sstableIter, err = CreateSsTableIteratorAndSeekToKey(sst, lower.Val)
+				if err != nil {
+					return nil, err
+				}
+				if sstableIter.IsValid() && sstableIter.Key().Compare(lower.Val) == 0 {
+					err := sstableIter.Next()
+					if err != nil {
+						return nil, err
+					}
+				}
+			} else {
+				sstableIter, err = CreateSsTableIteratorAndSeekToFirst(sst)
 				if err != nil {
 					return nil, err
 				}
 			}
-		} else {
-			sstableIter, err = CreateSsTableIteratorAndSeekToFirst(sst)
-			if err != nil {
-				return nil, err
-			}
+			sstableIters = append(sstableIters, sstableIter)
 		}
-		sstableIters = append(sstableIters, sstableIter)
-
 	}
 
 	sstMergeIter := CreateMergeIterator(sstableIters)

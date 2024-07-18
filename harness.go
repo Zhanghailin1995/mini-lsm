@@ -214,3 +214,10 @@ func GenerateSst(id uint32, path string, data []StringKeyValuePair, blockCache *
 	}
 	return utils.Unwrap(builder.Build(id, blockCache, path))
 }
+
+func Sync(storage *LsmStorageInner) {
+	storage.stateLock.Lock()
+	utils.UnwrapError(storage.ForceFreezeMemTable())
+	storage.stateLock.Unlock()
+	utils.UnwrapError(storage.ForceFlushNextImmMemtable())
+}

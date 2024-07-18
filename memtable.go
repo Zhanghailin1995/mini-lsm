@@ -51,6 +51,17 @@ func (m *MemTable) Scan(lower, upper KeyBound) *MemTableIterator {
 	return CreateMemTableIterator(m.skipMap, lower, upper)
 }
 
+func (m *MemTable) Flush(builder *SsTableBuilder) error {
+	m.rwLock.RLock()
+	defer m.rwLock.RUnlock()
+	iter := m.skipMap.Front()
+	for iter != nil {
+		builder.Add(iter.Key().(KeyType), iter.Value.([]byte))
+		iter = iter.Next()
+	}
+	return nil
+}
+
 func (m *MemTable) ApproximateSize() uint32 {
 	return atomic.LoadUint32(&m.approximateSize)
 }
@@ -74,6 +85,31 @@ const (
 type KeyBound struct {
 	Val  KeyType
 	Type BoundType
+}
+
+type BytesBound struct {
+	Val  []byte
+	Type BoundType
+}
+
+func BytesBounded(val []byte, boundType BoundType) BytesBound {
+	return BytesBound{Val: val, Type: boundType}
+}
+
+func MapBound(bound BytesBound) KeyBound {
+	return KeyBound{Val: Key(bound.Val), Type: bound.Type}
+}
+
+func IncludeBytes(val []byte) BytesBound {
+	return BytesBounded(val, Included)
+}
+
+func ExcludeBytes(val []byte) BytesBound {
+	return BytesBounded(val, Excluded)
+}
+
+func UnboundBytes() BytesBound {
+	return BytesBounded(nil, Unbounded)
 }
 
 func Bounded(val KeyType, boundType BoundType) KeyBound {
