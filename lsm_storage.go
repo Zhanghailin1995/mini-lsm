@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
 	"github.com/sirupsen/logrus"
+	"os"
 	"path"
 	"sync"
 	"sync/atomic"
@@ -234,8 +235,27 @@ func (lsm *LsmStorageInner) ForceFlushNextImmMemtable() error {
 		lsm.state = snapshot
 		lsm.rwLock.Unlock()
 	}
+	if err = lsm.SyncDir(); err != nil {
+		return err
+	}
 	return nil
 
+}
+
+func (lsm *LsmStorageInner) SyncDir() error {
+	println("sync dir", lsm.path)
+	dir, err := os.OpenFile(lsm.path, os.O_RDONLY, 0666)
+	//dir, err := os.Open(lsm.path)
+	if err != nil {
+		return err
+	}
+	//if err := syscall.Fsync(syscall.Handle(dir.Fd())); err != nil {
+	//	return err
+	//}
+	if err := dir.Sync(); err != nil {
+		return err
+	}
+	return dir.Close()
 }
 
 func pathOfSstStatic(path0 string, id uint32) string {
