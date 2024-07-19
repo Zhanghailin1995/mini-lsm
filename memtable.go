@@ -74,6 +74,10 @@ func (m *MemTable) ForTestingGetSlice(key KeyType) []byte {
 	return m.Get(key)
 }
 
+func (m *MemTable) IsEmpty() bool {
+	return m.skipMap.Len() == 0
+}
+
 type BoundType uint8
 
 const (

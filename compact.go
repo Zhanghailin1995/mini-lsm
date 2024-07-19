@@ -32,13 +32,13 @@ const (
 )
 
 type CompactionOptions struct {
-	compactionType CompactionType
-	opt            interface{}
+	CompactionType CompactionType
+	Opt            interface{}
 }
 
 func (lsm *LsmStorageInner) triggerFlush() error {
 	lsm.rwLock.RLock()
-	flush := len(lsm.state.immMemTable) >= int(lsm.options.numberMemTableLimit)
+	flush := len(lsm.state.immMemTable) >= int(lsm.options.NumberMemTableLimit)
 	lsm.rwLock.RUnlock()
 	if flush {
 		return lsm.ForceFlushNextImmMemtable()
@@ -53,7 +53,7 @@ func (lsm *LsmStorageInner) SpawnFlushThread(rx, tx chan struct{}) {
 		for {
 			select {
 			case <-ticker.C:
-				logrus.Infof("trigger flush")
+				//logrus.Infof("trigger flush")
 				err := lsm.triggerFlush()
 				if err != nil {
 					logrus.Errorf("trigger flush error: %v", err)

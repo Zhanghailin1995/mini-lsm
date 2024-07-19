@@ -166,8 +166,8 @@ func TestTask3StorageIntegration(t *testing.T) {
 func TestTask3FreezeOnCapacity(t *testing.T) {
 	dir := t.TempDir()
 	options := DefaultForWeek1Test()
-	options.targetSstSize = 1024
-	options.numberMemTableLimit = 1000
+	options.TargetSstSize = 1024
+	options.NumberMemTableLimit = 1000
 	storage, err := OpenLsmStorageInner(dir, options)
 	if err != nil {
 		t.Errorf("OpenLsmStorageInner error: %v", err)

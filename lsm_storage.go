@@ -6,6 +6,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"os"
 	"path"
+	"runtime"
 	"sync"
 	"sync/atomic"
 )
@@ -53,6 +54,31 @@ func (lsm *MiniLsm) Scan(lower, upper BytesBound) (*FusedIterator, error) {
 	return lsm.inner.Scan(MapBound(lower), MapBound(upper))
 }
 
+func (lsm *MiniLsm) ForceFlush() error {
+	lsm.inner.rwLock.RLock()
+	if !lsm.inner.state.memTable.IsEmpty() {
+		lsm.inner.rwLock.RUnlock()
+
+		lsm.inner.stateLock.Lock()
+		err := lsm.inner.ForceFreezeMemTable()
+		lsm.inner.stateLock.Unlock()
+		if err != nil {
+			return err
+		}
+	} else {
+		lsm.inner.rwLock.RUnlock()
+	}
+
+	lsm.inner.rwLock.RLock()
+	if len(lsm.inner.state.immMemTable) > 0 {
+		lsm.inner.rwLock.RUnlock()
+		return lsm.inner.ForceFlushNextImmMemtable()
+	} else {
+		lsm.inner.rwLock.RUnlock()
+		return nil
+	}
+}
+
 type LsmStorageInner struct {
 	rwLock     sync.RWMutex
 	stateLock  sync.Mutex
@@ -97,36 +123,39 @@ func CreateLsmStorageState(options *LsmStorageOptions) *LsmStorageState {
 }
 
 type LsmStorageOptions struct {
-	blockSize           uint32
-	targetSstSize       uint32
-	numberMemTableLimit uint32
-	compactionOptions   *CompactionOptions
-	enableWal           bool
+	BlockSize           uint32
+	TargetSstSize       uint32
+	NumberMemTableLimit uint32
+	CompactionOptions   *CompactionOptions
+	EnableWal           bool
+	Serializable        bool
 }
 
 func DefaultForWeek1Test() *LsmStorageOptions {
 	return &LsmStorageOptions{
-		blockSize:           4096,
-		targetSstSize:       2 << 20,
-		numberMemTableLimit: 50,
-		compactionOptions: &CompactionOptions{
-			compactionType: NoCompaction,
-			opt:            nil,
+		BlockSize:           4096,
+		TargetSstSize:       2 << 20,
+		NumberMemTableLimit: 50,
+		CompactionOptions: &CompactionOptions{
+			CompactionType: NoCompaction,
+			Opt:            nil,
 		},
-		enableWal: false,
+		EnableWal:    false,
+		Serializable: false,
 	}
 }
 
 func DefaultForWeek1Day6Test() *LsmStorageOptions {
 	return &LsmStorageOptions{
-		blockSize:           4096,
-		targetSstSize:       2 << 20,
-		numberMemTableLimit: 2,
-		compactionOptions: &CompactionOptions{
-			compactionType: NoCompaction,
-			opt:            nil,
+		BlockSize:           4096,
+		TargetSstSize:       2 << 20,
+		NumberMemTableLimit: 2,
+		CompactionOptions: &CompactionOptions{
+			CompactionType: NoCompaction,
+			Opt:            nil,
 		},
-		enableWal: false,
+		EnableWal:    false,
+		Serializable: false,
 	}
 }
 
@@ -166,11 +195,11 @@ func (lsm *LsmStorageInner) Close() error {
 }
 
 func (lsm *LsmStorageInner) tryFreeze(estimatedSize uint32) error {
-	if estimatedSize >= lsm.options.targetSstSize {
+	if estimatedSize >= lsm.options.TargetSstSize {
 		lsm.stateLock.Lock()
 		defer lsm.stateLock.Unlock()
 		lsm.rwLock.RLock()
-		if lsm.state.memTable.ApproximateSize() >= lsm.options.targetSstSize {
+		if lsm.state.memTable.ApproximateSize() >= lsm.options.TargetSstSize {
 			lsm.rwLock.RUnlock()
 			_ = lsm.ForceFreezeMemTable()
 		}
@@ -211,7 +240,7 @@ func (lsm *LsmStorageInner) ForceFlushNextImmMemtable() error {
 		lsm.rwLock.RUnlock()
 	}
 
-	builder := NewSsTableBuilder(lsm.options.blockSize)
+	builder := NewSsTableBuilder(lsm.options.BlockSize)
 	err := flushMemtable.Flush(builder)
 	if err != nil {
 		return err
@@ -244,6 +273,9 @@ func (lsm *LsmStorageInner) ForceFlushNextImmMemtable() error {
 
 func (lsm *LsmStorageInner) SyncDir() error {
 	println("sync dir", lsm.path)
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	dir, err := os.OpenFile(lsm.path, os.O_RDONLY, 0666)
 	//dir, err := os.Open(lsm.path)
 	if err != nil {
