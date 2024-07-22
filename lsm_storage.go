@@ -3,6 +3,7 @@ package mini_lsm
 import (
 	"fmt"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
+	"github.com/dgryski/go-farm"
 	"github.com/sirupsen/logrus"
 	"os"
 	"path"
@@ -330,11 +331,22 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 	for _, id := range snapshot.l0SsTables {
 		sst := snapshot.sstables[id]
 		if keyWithin(key, *sst.FirstKey(), *sst.LastKey()) {
-			sstIter, err := CreateSsTableIteratorAndSeekToKey(snapshot.sstables[id], key)
-			if err != nil {
-				return nil, err
+			if sst.bloom != nil {
+				if sst.bloom.MayContain(farm.Fingerprint32(key.Val)) {
+					sstIter, err := CreateSsTableIteratorAndSeekToKey(snapshot.sstables[id], key)
+					if err != nil {
+						return nil, err
+					}
+					iters = append(iters, sstIter)
+				}
+			} else {
+				sstIter, err := CreateSsTableIteratorAndSeekToKey(snapshot.sstables[id], key)
+				if err != nil {
+					return nil, err
+				}
+				iters = append(iters, sstIter)
 			}
-			iters = append(iters, sstIter)
+
 		}
 	}
 	mergeIter := CreateMergeIterator(iters)

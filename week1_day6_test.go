@@ -161,3 +161,17 @@ func TestTask3SstFilter(t *testing.T) {
 	assert.NoError(t, storage.Close())
 
 }
+
+//func TestSetBit(t *testing.T) {
+//	b := make([]byte, 2)
+//
+//	SetBit(b, 10, true)
+//	assert.Equal(t, b, []byte{0, 0b00000001 << 2})
+//	SetBit(b, 11, true)
+//	assert.Equal(t, b, []byte{0, 0b00000011 << 2})
+//	SetBit(b, 10, false)
+//	assert.Equal(t, b, []byte{0, 0b00000010 << 2})
+//
+//	x := utils.WrappingAddU32(200, math.MaxUint32)
+//	println(x)
+//}

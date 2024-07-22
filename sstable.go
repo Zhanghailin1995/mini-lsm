@@ -220,16 +220,30 @@ func OpenSsTableForTest(file *FileObject) (*SsTable, error) {
 
 func OpenSsTable(id uint32, blockCache *BlockCache, file *FileObject) (*SsTable, error) {
 	fileSize := file.Size()
-	rawMetaOffset, err := file.Read(fileSize-4, 4)
+
+	// read bloom
+	rawBloomOffset, err := file.Read(fileSize-4, 4)
+	if err != nil {
+		return nil, err
+	}
+	bloomOffset := binary.BigEndian.Uint32(rawBloomOffset)
+	rawBloom, err := file.Read(int64(bloomOffset), int(fileSize)-4-int(bloomOffset))
+	if err != nil {
+		return nil, err
+	}
+	bloom := DecodeBloom(rawBloom)
+
+	rawMetaOffset, err := file.Read(int64(bloomOffset-4), 4)
 	if err != nil {
 		return nil, err
 	}
 	blockMetaOffset := binary.BigEndian.Uint32(rawMetaOffset)
-	rawMeta, err := file.Read(int64(blockMetaOffset), int(int(fileSize)-4-int(blockMetaOffset)))
+	rawMeta, err := file.Read(int64(blockMetaOffset), int(bloomOffset)-4-int(blockMetaOffset))
 	if err != nil {
 		return nil, err
 	}
 	blockMeta := DecodeBlockMeta(rawMeta)
+
 	firstKey := blockMeta[0].firstKey.Clone()
 	lastKey := blockMeta[len(blockMeta)-1].lastKey.Clone()
 	return &SsTable{
@@ -240,7 +254,7 @@ func OpenSsTable(id uint32, blockCache *BlockCache, file *FileObject) (*SsTable,
 		id:              id,
 		blockMetaOffset: blockMetaOffset,
 		blockCache:      blockCache,
-		bloom:           nil,
+		bloom:           bloom,
 		maxTs:           0,
 	}, nil
 }

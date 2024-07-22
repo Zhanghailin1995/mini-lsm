@@ -16,6 +16,17 @@ type Block struct {
 	offsets []uint16
 }
 
+func (b *Block) GetFirstKey() []byte {
+	buf := b.data
+	// advance 2 bytes to skip the first key overlap
+	buf = buf[SizeOfU16:]
+	keyLen := binary.BigEndian.Uint16(buf)
+	// advance 2 bytes to skip the key len
+	buf = buf[SizeOfU16:]
+	key := buf[:keyLen]
+	return utils.Copy(key)
+}
+
 func (b *Block) Encode() []byte {
 	estimatedSize := b.estimatedSize()
 	rawBuffer := make([]byte, 0, utils.RoundUpToPowerOfTwo(uint64(estimatedSize)))
@@ -61,6 +72,20 @@ type BlockBuilder struct {
 	firstKey  KeyType
 }
 
+func computeOverlap(firstKey, key []byte) uint32 {
+	i := 0
+	for {
+		if i >= len(firstKey) || i >= len(key) {
+			break
+		}
+		if firstKey[i] != key[i] {
+			break
+		}
+		i++
+	}
+	return uint32(i)
+}
+
 func NewBlockBuilder(blockSize uint32) *BlockBuilder {
 	return &BlockBuilder{
 		offsets:   make([]uint16, 0, 256),
@@ -81,20 +106,28 @@ func (b *BlockBuilder) Add(key KeyType, value []byte) bool {
 	// 如果一个大key-value对加入到一个空的block中，会导致block的大小超过block_size
 	// 那么应该允许其加入，否则会导致该key-value一直无法写入，block size是软限制，并非一定不可以超过
 	// 2 * 3 一个key len 一个 value len 一个offset
+	// key_overlap_len (u16) | rest_key_len (u16) | key (rest_key_len)
 	if b.estimatedSize()+uint32(len(key.Val)+len(value)+int(SizeOfU16)*3) > b.blockSize && !b.isEmpty() {
 		return false
 	}
 
 	b.offsets = append(b.offsets, uint16(len(b.data)))
-	// put key len
+
+	overlap := computeOverlap(b.firstKey.Val, key.Val)
 	idx := len(b.data)
+	// put key overlap
 	b.data = append(b.data, make([]byte, SizeOfU16)...)
-	binary.BigEndian.PutUint16(b.data[idx:idx+int(SizeOfU16)], uint16(len(key.Val)))
+	binary.BigEndian.PutUint16(b.data[idx:idx+int(SizeOfU16)], uint16(overlap))
+	idx += int(SizeOfU16)
+	// put key len = key.len - overlap
+
+	b.data = append(b.data, make([]byte, SizeOfU16)...)
+	binary.BigEndian.PutUint16(b.data[idx:idx+int(SizeOfU16)], uint16(len(key.Val)-int(overlap)))
 	idx += int(SizeOfU16)
 
 	// put key
-	b.data = append(b.data, key.Val...)
-	idx += len(key.Val)
+	b.data = append(b.data, key.Val[overlap:]...)
+	idx += len(key.Val) - int(overlap)
 
 	// put value len
 	b.data = append(b.data, make([]byte, SizeOfU16)...)
@@ -103,8 +136,8 @@ func (b *BlockBuilder) Add(key KeyType, value []byte) bool {
 
 	// put value
 	b.data = append(b.data, value...)
-	if len(b.firstKey.Val) == 0 {
-		b.firstKey = Key(utils.Copy(key.Val))
+	if b.firstKey.Val == nil || len(b.firstKey.Val) == 0 {
+		b.firstKey = Key(key.Val)
 	}
 	return true
 }
@@ -144,7 +177,7 @@ func NewBlockIterator(block *Block) *BlockIterator {
 		valueStart: 0,
 		valueEnd:   0,
 		idx:        0,
-		firstKey:   Key([]byte{}),
+		firstKey:   KeyType{Val: block.GetFirstKey()},
 	}
 }
 
@@ -175,11 +208,23 @@ func (b *BlockIterator) SeekToFirst() {
 
 func (b *BlockIterator) seekToOffset(offset int) {
 	entry := b.block.data[offset:]
+	overlapLen := int(binary.BigEndian.Uint16(entry))
+	entry = entry[SizeOfU16:]
+
 	keyLen := int(binary.BigEndian.Uint16(entry))
-	key := entry[SizeOfU16 : int(SizeOfU16)+keyLen]
-	b.key = Key(utils.Copy(key))
-	valueLen := int(binary.BigEndian.Uint16(entry[int(SizeOfU16)+keyLen:]))
-	b.valueStart = offset + int(SizeOfU16) + keyLen + int(SizeOfU16)
+	entry = entry[SizeOfU16:]
+
+	key := entry[:keyLen]
+	entry = entry[keyLen:]
+	rawKey := make([]byte, overlapLen+len(key))
+	copy(rawKey, b.firstKey.Val[:overlapLen])
+	copy(rawKey[overlapLen:], key)
+	// println("rawKey: ", string(rawKey))
+	b.key = Key(rawKey)
+
+	valueLen := int(binary.BigEndian.Uint16(entry))
+	// offset + overlaplen's len + keylen's len + keylen + valuelen's len
+	b.valueStart = offset + int(SizeOfU16) + int(SizeOfU16) + keyLen + int(SizeOfU16)
 	b.valueEnd = b.valueStart + valueLen
 }
 

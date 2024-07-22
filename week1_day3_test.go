@@ -89,8 +89,10 @@ func TestBlockIterator(t *testing.T) {
 		for j := 0; j < numOfKeys(); j++ {
 			k := iter.Key()
 			v := iter.Value()
-			assert.Equal(t, k.Val, keyOf(j).Val)
-			assert.Equal(t, v, valueOf(j))
+			//fmt.Printf("expect kv: %s-%s\n", string(keyOf(j).Val), string(valueOf(j)))
+			//fmt.Printf("actual kv: %s-%s\n", string(k.Val), string(v))
+			assert.Equal(t, keyOf(j).Val, k.Val)
+			assert.Equal(t, valueOf(j), v)
 			iter.Next()
 		}
 		iter.SeekToFirst()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
+	"github.com/dgryski/go-farm"
 )
 
 type SsTableBuilder struct {
@@ -13,6 +14,7 @@ type SsTableBuilder struct {
 	data         []byte
 	meta         []*BlockMeta
 	blockSize    uint32
+	keyHashes    []uint32
 }
 
 func NewSsTableBuilder(blockSize uint32) *SsTableBuilder {
@@ -23,6 +25,7 @@ func NewSsTableBuilder(blockSize uint32) *SsTableBuilder {
 		data:         make([]byte, 0), // 应该给一个capacity
 		meta:         make([]*BlockMeta, 0),
 		blockSize:    blockSize,
+		keyHashes:    make([]uint32, 0),
 	}
 }
 
@@ -30,6 +33,7 @@ func (s *SsTableBuilder) Add(key KeyType, value []byte) {
 	if len(s.firstKey.Val) == 0 {
 		s.firstKey = key.Clone()
 	}
+	s.keyHashes = append(s.keyHashes, farm.Fingerprint32(key.Val))
 	if s.blockBuilder.Add(key, value) {
 		s.lastKey = key.Clone()
 		return
@@ -66,8 +70,14 @@ func (s *SsTableBuilder) Build(id uint32, blockCache *BlockCache, path string) (
 	buf = EncodeBlockMeta(s.meta, buf)
 	// put 32 into buf
 	buffer := bytes.NewBuffer(buf)
-	buffer.Grow(4) // u32
-	utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint32(metaOffset)))
+	//buffer.Grow(4) // u32
+	utils.UnwrapError(binary.Write(buffer, binary.BigEndian, uint32(metaOffset)))
+
+	bloom := BuildFromKeyHashes(s.keyHashes, BloomBitsPerKey(uint32(len(s.keyHashes)), 0.01))
+	bloomOffset := buffer.Len()
+	bloom.EncodeBuffer(buffer)
+	utils.UnwrapError(binary.Write(buffer, binary.BigEndian, uint32(bloomOffset)))
+
 	buf = buffer.Bytes()
 	file, err := CreateFileObject(path, buf)
 	if err != nil {
@@ -81,7 +91,7 @@ func (s *SsTableBuilder) Build(id uint32, blockCache *BlockCache, path string) (
 		lastKey:         s.meta[len(s.meta)-1].lastKey.Clone(),
 		blockMeta:       s.meta,
 		blockMetaOffset: uint32(metaOffset),
-		bloom:           nil,
+		bloom:           bloom,
 		maxTs:           0,
 	}, nil
 }
