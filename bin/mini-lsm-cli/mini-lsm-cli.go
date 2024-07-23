@@ -109,6 +109,9 @@ func main() {
 				utils.UnwrapError(iter.Next())
 			}
 			fmt.Printf("%d keys scanned\r\n", cnt)
+		} else if strings.HasPrefix(line, "full_compaction") {
+			utils.UnwrapError(lsm.ForceFullCompaction())
+			println("full compaction success")
 		}
 		epoch++
 	}

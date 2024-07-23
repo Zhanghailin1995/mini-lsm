@@ -2,8 +2,8 @@ package mini_lsm
 
 import "errors"
 
-// a: MergeIterator<MemTableIterator>
-// b: MergeIterator<SsTableIterator>
+// a: TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>
+// b: SstConcatIterator,
 type LsmIteratorInner = TwoMergeIterator
 
 type LsmIterator struct {

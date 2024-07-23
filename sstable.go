@@ -330,12 +330,12 @@ func (s *SsTable) CloseSstFile() error {
 	return s.file.Close()
 }
 
-func (s *SsTable) FirstKey() *KeyType {
-	return &s.firstKey
+func (s *SsTable) FirstKey() KeyType {
+	return s.firstKey
 }
 
-func (s *SsTable) LastKey() *KeyType {
-	return &s.lastKey
+func (s *SsTable) LastKey() KeyType {
+	return s.lastKey
 }
 
 func (s *SsTable) TableSize() int64 {

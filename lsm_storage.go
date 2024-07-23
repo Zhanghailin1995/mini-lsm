@@ -80,6 +80,10 @@ func (lsm *MiniLsm) ForceFlush() error {
 	}
 }
 
+func (lsm *MiniLsm) ForceFullCompaction() error {
+	return lsm.inner.ForceFullCompaction()
+}
+
 type LsmStorageInner struct {
 	rwLock     sync.RWMutex
 	stateLock  sync.Mutex
@@ -90,10 +94,22 @@ type LsmStorageInner struct {
 	options    *LsmStorageOptions
 }
 
+func ReadLsmStorageState[T any](lsm *LsmStorageInner, f func(*LsmStorageState) T) T {
+	lsm.rwLock.RLock()
+	defer lsm.rwLock.RUnlock()
+	return f(lsm.state)
+}
+
+type LevelSsTables struct {
+	level    uint32
+	ssTables []uint32
+}
+
 type LsmStorageState struct {
 	memTable    *MemTable
 	immMemTable []*MemTable
 	l0SsTables  []uint32
+	levels      []*LevelSsTables
 	sstables    map[uint32]*SsTable
 }
 
@@ -102,6 +118,16 @@ func (lsm *LsmStorageState) snapshot() *LsmStorageState {
 	copy(immMemtable, lsm.immMemTable)
 	l0SsTables := make([]uint32, len(lsm.l0SsTables))
 	copy(l0SsTables, lsm.l0SsTables)
+	levels := make([]*LevelSsTables, 0, len(lsm.levels))
+	for _, level := range lsm.levels {
+		ssTables := make([]uint32, len(level.ssTables))
+		copy(ssTables, level.ssTables)
+		levels = append(levels, &LevelSsTables{
+			level:    level.level,
+			ssTables: ssTables,
+		})
+	}
+
 	sstables := make(map[uint32]*SsTable)
 	for k, v := range lsm.sstables {
 		sstables[k] = v
@@ -110,15 +136,29 @@ func (lsm *LsmStorageState) snapshot() *LsmStorageState {
 		memTable:    lsm.memTable,
 		immMemTable: immMemtable,
 		l0SsTables:  l0SsTables,
+		levels:      levels,
 		sstables:    sstables,
 	}
 }
 
 func CreateLsmStorageState(options *LsmStorageOptions) *LsmStorageState {
+	var levels []*LevelSsTables
+	switch options.CompactionOptions.CompactionType {
+	case NoCompaction:
+		levels = make([]*LevelSsTables, 1)
+		levels[0] = &LevelSsTables{
+			level:    1,
+			ssTables: make([]uint32, 0),
+		}
+		break
+	default:
+		panic("unsupported compaction type")
+	}
 	return &LsmStorageState{
 		memTable:    CreateMemTable(0),
 		immMemTable: make([]*MemTable, 0),
 		l0SsTables:  make([]uint32, 0),
+		levels:      levels,
 		sstables:    make(map[uint32]*SsTable),
 	}
 }
@@ -273,7 +313,7 @@ func (lsm *LsmStorageInner) ForceFlushNextImmMemtable() error {
 }
 
 func (lsm *LsmStorageInner) SyncDir() error {
-	println("sync dir", lsm.path)
+	//println("sync dir", lsm.path)
 	if runtime.GOOS == "windows" {
 		return nil
 	}
@@ -319,6 +359,7 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 		}
 		return v, nil
 	}
+	// 从 immutable memtable 中查找
 	for _, mt := range snapshot.immMemTable {
 		if v := mt.Get(key); v != nil {
 			if len(v) == 0 {
@@ -327,31 +368,51 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 			return v, nil
 		}
 	}
-	iters := make([]StorageIterator, 0, len(snapshot.l0SsTables))
-	for _, id := range snapshot.l0SsTables {
-		sst := snapshot.sstables[id]
-		if keyWithin(key, *sst.FirstKey(), *sst.LastKey()) {
-			if sst.bloom != nil {
-				if sst.bloom.MayContain(farm.Fingerprint32(key.Val)) {
-					sstIter, err := CreateSsTableIteratorAndSeekToKey(snapshot.sstables[id], key)
-					if err != nil {
-						return nil, err
-					}
-					iters = append(iters, sstIter)
+	// 没有的话，再下钻到 sstables 中查找
+	// 从l0 和 l1 的sstables 中构建一个iterator
+	// l0合并成 merge iterator
+	// l1合并成 concat iterator
+	// 在合并成 two merge iterator
+	l0iters := make([]StorageIterator, 0, len(snapshot.l0SsTables))
+
+	keepTable := func(key KeyType, table *SsTable) bool {
+		if keyWithin(key, table.FirstKey(), table.LastKey()) {
+			if table.bloom != nil {
+				if table.bloom.MayContain(farm.Fingerprint32(key.Val)) {
+					return true
 				}
 			} else {
-				sstIter, err := CreateSsTableIteratorAndSeekToKey(snapshot.sstables[id], key)
-				if err != nil {
-					return nil, err
-				}
-				iters = append(iters, sstIter)
+				return true
 			}
+		}
+		return false
+	}
 
+	for _, id := range snapshot.l0SsTables {
+		sst := snapshot.sstables[id]
+		if keepTable(key, sst) {
+			sstIter, err := CreateSsTableIteratorAndSeekToKey(sst, key)
+			if err != nil {
+				return nil, err
+			}
+			l0iters = append(l0iters, sstIter)
 		}
 	}
-	mergeIter := CreateMergeIterator(iters)
-	if mergeIter.IsValid() && mergeIter.Key().Compare(key) == 0 && len(mergeIter.Value()) > 0 {
-		return utils.Copy(mergeIter.Value()), nil
+	l0Iter := CreateMergeIterator(l0iters)
+	l1SsTables := make([]*SsTable, 0, len(snapshot.levels[0].ssTables))
+	for _, id := range snapshot.levels[0].ssTables {
+		sst := snapshot.sstables[id]
+		if keepTable(key, sst) {
+			l1SsTables = append(l1SsTables, sst)
+		}
+	}
+	l1Iter, err := CreateSstConcatIteratorAndSeekToKey(l1SsTables, key)
+	if err != nil {
+		return nil, err
+	}
+	twoMergeIter, _ := CreateTwoMergeIterator(l0Iter, l1Iter)
+	if twoMergeIter.IsValid() && twoMergeIter.Key().Compare(key) == 0 && len(twoMergeIter.Value()) > 0 {
+		return utils.Copy(twoMergeIter.Value()), nil
 	}
 
 	return nil, nil
@@ -423,10 +484,10 @@ func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) 
 	}
 	memtableMergeIter := CreateMergeIterator(memtableIters)
 
-	var sstableIters = make([]StorageIterator, 0, len(snapshot.l0SsTables))
+	var l0Iters = make([]StorageIterator, 0, len(snapshot.l0SsTables))
 	for _, id := range snapshot.l0SsTables {
 		sst := snapshot.sstables[id]
-		if rangeOverlap(lower, upper, *sst.FirstKey(), *sst.LastKey()) {
+		if rangeOverlap(lower, upper, sst.FirstKey(), sst.LastKey()) {
 			var sstableIter *SsTableIterator
 			var err error
 			if lower.Type == Included {
@@ -451,19 +512,65 @@ func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) 
 					return nil, err
 				}
 			}
-			sstableIters = append(sstableIters, sstableIter)
+			l0Iters = append(l0Iters, sstableIter)
+		}
+	}
+	// 构建l0 merge iter
+	l0Iter := CreateMergeIterator(l0Iters)
+
+	// 构建l1 concat iter
+	l1SsTables := make([]*SsTable, 0, len(snapshot.levels[0].ssTables))
+	for _, id := range snapshot.levels[0].ssTables {
+		sst := snapshot.sstables[id]
+		if rangeOverlap(lower, upper, sst.FirstKey(), sst.LastKey()) {
+			l1SsTables = append(l1SsTables, sst)
 		}
 	}
 
-	sstMergeIter := CreateMergeIterator(sstableIters)
+	var l1Iter *SstConcatIterator
+	var err error
 
-	iter, err := CreateTwoMergeIterator(memtableMergeIter, sstMergeIter)
+	if lower.Type == Included {
+		l1Iter, err = CreateSstConcatIteratorAndSeekToKey(l1SsTables, lower.Val)
+		if err != nil {
+			return nil, err
+		}
+	} else if lower.Type == Excluded {
+		l1Iter, err = CreateSstConcatIteratorAndSeekToKey(l1SsTables, lower.Val)
+		if err != nil {
+			return nil, err
+		}
+		if l1Iter.IsValid() && l1Iter.Key().Compare(lower.Val) == 0 {
+			err := l1Iter.Next()
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		l1Iter, err = CreateSstConcatIteratorAndSeekToFirst(l1SsTables)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// PrintIter(memtableMergeIter)
+
+	// 构建memtable 和l0 的two merge iter
+	twoMergeIter, err := CreateTwoMergeIterator(memtableMergeIter, l0Iter)
 	if err != nil {
 		return nil, err
 	}
-	lsmIterator, err := CreateLsmIterator(iter, upper)
+	// PrintIter(twoMergeIter)
+	// 再和l1的concat iter 合并
+	lsmIteratorInner, err := CreateTwoMergeIterator(twoMergeIter, l1Iter)
 	if err != nil {
 		return nil, err
 	}
+
+	// PrintIter(lsmIterator)
+	lsmIterator, err := CreateLsmIterator(lsmIteratorInner, upper)
+	if err != nil {
+		return nil, err
+	}
+
 	return CreateFusedIterator(lsmIterator), nil
 }

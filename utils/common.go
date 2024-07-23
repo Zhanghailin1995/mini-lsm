@@ -49,3 +49,29 @@ func RepeatByte(b byte, n int) []byte {
 	}
 	return bytes
 }
+
+func PartitionPoint[T any](arr []T, pred func(T) bool) int {
+	size := len(arr)
+	left := 0
+	right := size
+	for left < right {
+		mid := left + size/2
+		less := pred(arr[mid])
+		if less {
+			left = mid + 1
+		} else {
+			right = mid
+		}
+		// we ignore equal
+		size = right - left
+	}
+	Assert(left <= len(arr), "find partition point idx error")
+	return left
+}
+
+func SaturatingSub(a, b int) int {
+	if a-b < 0 {
+		return 0
+	}
+	return a - b
+}

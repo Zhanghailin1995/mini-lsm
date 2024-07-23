@@ -221,3 +221,16 @@ func Sync(storage *LsmStorageInner) {
 	storage.stateLock.Unlock()
 	utils.UnwrapError(storage.ForceFlushNextImmMemtable())
 }
+
+func ConstructMergeIteratorOverStorage(state *LsmStorageState) *MergeIterator {
+	iters := make([]StorageIterator, 0)
+	for _, id := range state.l0SsTables {
+		iters = append(iters, utils.Unwrap(CreateSsTableIteratorAndSeekToFirst(state.sstables[id])))
+	}
+	for _, level := range state.levels {
+		for _, id := range level.ssTables {
+			iters = append(iters, utils.Unwrap(CreateSsTableIteratorAndSeekToFirst(state.sstables[id])))
+		}
+	}
+	return CreateMergeIterator(iters)
+}

@@ -140,12 +140,12 @@ func TestTask3SstFilter(t *testing.T) {
 	assert.True(t, iter.NumActiveIterators() >= 10, "did you implement num_active_iterators? current active iterators = %d", iter.NumActiveIterators())
 
 	maxNum := iter.NumActiveIterators()
-	t.Log("maxNum:", maxNum)
+	//t.Log("maxNum:", maxNum)
 	iter = utils.Unwrap(storage.Scan(Exclude(StringKey("10000")), Unbound()))
 	assert.True(t, iter.NumActiveIterators() < maxNum)
 
 	minNum := iter.NumActiveIterators()
-	t.Log("minNum:", minNum)
+	//t.Log("minNum:", minNum)
 	iter = utils.Unwrap(storage.Scan(Unbound(), Exclude(StringKey("00001"))))
 	assert.Equal(t, iter.NumActiveIterators(), minNum)
 
