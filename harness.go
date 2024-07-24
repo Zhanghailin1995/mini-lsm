@@ -3,8 +3,11 @@ package mini_lsm
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
+	"slices"
 	"testing"
+	"time"
 )
 
 var (
@@ -233,4 +236,79 @@ func ConstructMergeIteratorOverStorage(state *LsmStorageState) *MergeIterator {
 		}
 	}
 	return CreateMergeIterator(iters)
+}
+
+func CompactionBench(lsm *MiniLsm, t *testing.T) {
+	keyMap := make(map[uint32]uint32)
+	genKey := func(i uint32) string {
+		return fmt.Sprintf("%10d", i)
+	}
+	genValue := func(i uint32) string {
+		return fmt.Sprintf("%110d", i)
+	}
+	maxKey := uint32(0)
+	overlaps := uint32(20000)
+	if TSEnabled {
+		overlaps = uint32(10000)
+	}
+	for iter := uint32(0); iter < 10; iter++ {
+		rangeBegin := iter * 5000
+		for i := rangeBegin; i < rangeBegin+overlaps; i++ {
+			key := genKey(i)
+			version, ok := keyMap[i]
+			if !ok {
+				version = 0
+			}
+			version += 1
+			value := genValue(version)
+			keyMap[i] = version
+			utils.UnwrapError(lsm.Put([]byte(key), []byte(value)))
+			if i > maxKey {
+				maxKey = i
+			}
+		}
+	}
+	time.Sleep(time.Second)
+	for ReadLsmStorageState(lsm.inner, func(state *LsmStorageState) bool {
+		return len(state.immMemTable) > 0
+	}) {
+		utils.UnwrapError(lsm.inner.ForceFlushNextImmMemtable())
+	}
+
+	prevSnapshot := ReadLsmStorageState(lsm.inner, func(state *LsmStorageState) *LsmStorageState {
+		return state
+	})
+	toCont := func() bool {
+		time.Sleep(time.Second)
+		snapshot := ReadLsmStorageState(lsm.inner, func(state *LsmStorageState) *LsmStorageState {
+			return state
+		})
+		toCont := !slices.EqualFunc(prevSnapshot.levels, snapshot.levels, func(a, b *LevelSsTables) bool {
+			return a.level == b.level && slices.Equal(a.ssTables, b.ssTables)
+		}) || !slices.Equal(prevSnapshot.l0SsTables, snapshot.l0SsTables)
+		prevSnapshot = snapshot
+		return toCont
+	}
+	for toCont() {
+		println("waiting for compaction to converge")
+	}
+
+	expectedKeyValuePairs := make([]StringKeyValuePair, 0)
+	for i := uint32(0); i <= maxKey+40000; i++ {
+		key := genKey(i)
+		value := utils.Unwrap(lsm.Get([]byte(key)))
+		u, ok := keyMap[i]
+		if ok {
+			expectedValue := genValue(u)
+			if string(value) != expectedValue {
+				panic(fmt.Sprintf("expected value %s, got %s", expectedValue, string(value)))
+			}
+			expectedKeyValuePairs = append(expectedKeyValuePairs, StringKeyValuePair{key, expectedValue})
+		} else {
+			utils.Assert(value == nil || len(value) == 0, "expected nil value")
+		}
+
+	}
+	CheckIterResultByKey1(t, utils.Unwrap(lsm.Scan(UnboundBytes(), UnboundBytes())), expectedKeyValuePairs)
+	println("This test case does not guarantee your compaction algorithm produces a LSM state as expected. It only does minimal checks on the size of the levels. Please use the compaction simulator to check if the compaction is correctly going on.")
 }

@@ -15,12 +15,16 @@ import (
 type MiniLsm struct {
 	inner *LsmStorageInner
 	// Notifies the L0 flush thread to stop working.
-	flushShutdownNotifier     chan struct{}
-	flushShutdownDoneNotifier chan struct{}
+	flushShutdownNotifier          chan struct{}
+	flushShutdownDoneNotifier      chan struct{}
+	compactionShutdownNotifier     chan struct{}
+	compactionShutdownDoneNotifier chan struct{}
 }
 
 func (lsm *MiniLsm) Shutdown() error {
 	lsm.flushShutdownNotifier <- struct{}{}
+	lsm.compactionShutdownNotifier <- struct{}{}
+	<-lsm.compactionShutdownDoneNotifier
 	<-lsm.flushShutdownDoneNotifier
 	return lsm.inner.Close()
 }
@@ -31,10 +35,13 @@ func Open(p string, options *LsmStorageOptions) (*MiniLsm, error) {
 		return nil, err
 	}
 	lsm := &MiniLsm{
-		inner:                     inner,
-		flushShutdownNotifier:     make(chan struct{}),
-		flushShutdownDoneNotifier: make(chan struct{}),
+		inner:                          inner,
+		flushShutdownNotifier:          make(chan struct{}),
+		flushShutdownDoneNotifier:      make(chan struct{}),
+		compactionShutdownNotifier:     make(chan struct{}),
+		compactionShutdownDoneNotifier: make(chan struct{}),
 	}
+	inner.SpawnCompactionThread(lsm.compactionShutdownNotifier, lsm.compactionShutdownDoneNotifier)
 	inner.SpawnFlushThread(lsm.flushShutdownNotifier, lsm.flushShutdownDoneNotifier)
 	return lsm, nil
 }
@@ -85,13 +92,14 @@ func (lsm *MiniLsm) ForceFullCompaction() error {
 }
 
 type LsmStorageInner struct {
-	rwLock     sync.RWMutex
-	stateLock  sync.Mutex
-	path       string
-	blockCache *BlockCache
-	nextSstId  uint32
-	state      *LsmStorageState
-	options    *LsmStorageOptions
+	rwLock               sync.RWMutex
+	stateLock            sync.Mutex
+	path                 string
+	blockCache           *BlockCache
+	nextSstId            uint32
+	state                *LsmStorageState
+	compactionController *CompactionController
+	options              *LsmStorageOptions
 }
 
 func ReadLsmStorageState[T any](lsm *LsmStorageInner, f func(*LsmStorageState) T) T {
@@ -151,6 +159,16 @@ func CreateLsmStorageState(options *LsmStorageOptions) *LsmStorageState {
 			ssTables: make([]uint32, 0),
 		}
 		break
+	case Simple:
+		opt := options.CompactionOptions.Opt.(*SimpleLeveledCompactionOptions)
+		levels = make([]*LevelSsTables, opt.MaxLevels)
+		for i := 0; i < int(opt.MaxLevels); i++ {
+			levels[i] = &LevelSsTables{
+				level:    uint32(i + 1),
+				ssTables: make([]uint32, 0),
+			}
+		}
+		break
 	default:
 		panic("unsupported compaction type")
 	}
@@ -200,6 +218,17 @@ func DefaultForWeek1Day6Test() *LsmStorageOptions {
 	}
 }
 
+func DefaultForWeek2Test(compactionOptions *CompactionOptions) *LsmStorageOptions {
+	return &LsmStorageOptions{
+		BlockSize:           4096,
+		TargetSstSize:       1 << 20,
+		NumberMemTableLimit: 2,
+		CompactionOptions:   compactionOptions,
+		EnableWal:           false,
+		Serializable:        false,
+	}
+}
+
 func OpenLsmStorageInner(path string, options *LsmStorageOptions) (*LsmStorageInner, error) {
 
 	// if path is not exist, create it
@@ -207,13 +236,26 @@ func OpenLsmStorageInner(path string, options *LsmStorageOptions) (*LsmStorageIn
 	if err != nil {
 		return nil, err
 	}
+	var cc *CompactionController
+	if options.CompactionOptions.CompactionType == NoCompaction {
+		cc = &CompactionController{
+			CompactionType: NoCompaction,
+			Controller:     nil,
+		}
+	} else if options.CompactionOptions.CompactionType == Simple {
+		cc = &CompactionController{
+			CompactionType: Simple,
+			Controller:     NewSimpleLeveledCompactionController(options.CompactionOptions.Opt.(*SimpleLeveledCompactionOptions)),
+		}
+	}
 
 	storage := &LsmStorageInner{
-		state:      CreateLsmStorageState(options),
-		path:       path,
-		blockCache: NewBlockCache(),
-		nextSstId:  1,
-		options:    options,
+		state:                CreateLsmStorageState(options),
+		path:                 path,
+		blockCache:           NewBlockCache(),
+		nextSstId:            1,
+		compactionController: cc,
+		options:              options,
 	}
 	return storage, nil
 }
@@ -399,18 +441,23 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 		}
 	}
 	l0Iter := CreateMergeIterator(l0iters)
-	l1SsTables := make([]*SsTable, 0, len(snapshot.levels[0].ssTables))
-	for _, id := range snapshot.levels[0].ssTables {
-		sst := snapshot.sstables[id]
-		if keepTable(key, sst) {
-			l1SsTables = append(l1SsTables, sst)
+	levelIters := make([]StorageIterator, 0, len(snapshot.levels))
+	for _, level := range snapshot.levels {
+		levelSsts := make([]*SsTable, 0, len(level.ssTables))
+		for _, id := range level.ssTables {
+			sst := snapshot.sstables[id]
+			if keepTable(key, sst) {
+				levelSsts = append(levelSsts, sst)
+			}
 		}
+		levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, key)
+		if err != nil {
+			return nil, err
+		}
+		levelIters = append(levelIters, levelIter)
 	}
-	l1Iter, err := CreateSstConcatIteratorAndSeekToKey(l1SsTables, key)
-	if err != nil {
-		return nil, err
-	}
-	twoMergeIter, _ := CreateTwoMergeIterator(l0Iter, l1Iter)
+	levelIter := CreateMergeIterator(levelIters)
+	twoMergeIter, _ := CreateTwoMergeIterator(l0Iter, levelIter)
 	if twoMergeIter.IsValid() && twoMergeIter.Key().Compare(key) == 0 && len(twoMergeIter.Value()) > 0 {
 		return utils.Copy(twoMergeIter.Value()), nil
 	}
@@ -518,40 +565,43 @@ func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) 
 	// 构建l0 merge iter
 	l0Iter := CreateMergeIterator(l0Iters)
 
-	// 构建l1 concat iter
-	l1SsTables := make([]*SsTable, 0, len(snapshot.levels[0].ssTables))
-	for _, id := range snapshot.levels[0].ssTables {
-		sst := snapshot.sstables[id]
-		if rangeOverlap(lower, upper, sst.FirstKey(), sst.LastKey()) {
-			l1SsTables = append(l1SsTables, sst)
+	levelIters := make([]StorageIterator, 0, len(snapshot.levels))
+	for _, level := range snapshot.levels {
+		levelSsts := make([]*SsTable, 0, len(level.ssTables))
+		for _, id := range level.ssTables {
+			sst := snapshot.sstables[id]
+			if rangeOverlap(lower, upper, sst.FirstKey(), sst.LastKey()) {
+				levelSsts = append(levelSsts, sst)
+			}
 		}
-	}
-
-	var l1Iter *SstConcatIterator
-	var err error
-
-	if lower.Type == Included {
-		l1Iter, err = CreateSstConcatIteratorAndSeekToKey(l1SsTables, lower.Val)
-		if err != nil {
-			return nil, err
-		}
-	} else if lower.Type == Excluded {
-		l1Iter, err = CreateSstConcatIteratorAndSeekToKey(l1SsTables, lower.Val)
-		if err != nil {
-			return nil, err
-		}
-		if l1Iter.IsValid() && l1Iter.Key().Compare(lower.Val) == 0 {
-			err := l1Iter.Next()
+		if lower.Type == Included {
+			levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, lower.Val)
 			if err != nil {
 				return nil, err
 			}
-		}
-	} else {
-		l1Iter, err = CreateSstConcatIteratorAndSeekToFirst(l1SsTables)
-		if err != nil {
-			return nil, err
+			levelIters = append(levelIters, levelIter)
+		} else if lower.Type == Excluded {
+			levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, lower.Val)
+			if err != nil {
+				return nil, err
+			}
+			if levelIter.IsValid() && levelIter.Key().Compare(lower.Val) == 0 {
+				err := levelIter.Next()
+				if err != nil {
+					return nil, err
+				}
+			}
+			levelIters = append(levelIters, levelIter)
+		} else {
+			levelIter, err := CreateSstConcatIteratorAndSeekToFirst(levelSsts)
+			if err != nil {
+				return nil, err
+			}
+			levelIters = append(levelIters, levelIter)
 		}
 	}
+	levelIter := CreateMergeIterator(levelIters)
+
 	// PrintIter(memtableMergeIter)
 
 	// 构建memtable 和l0 的two merge iter
@@ -561,7 +611,7 @@ func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) 
 	}
 	// PrintIter(twoMergeIter)
 	// 再和l1的concat iter 合并
-	lsmIteratorInner, err := CreateTwoMergeIterator(twoMergeIter, l1Iter)
+	lsmIteratorInner, err := CreateTwoMergeIterator(twoMergeIter, levelIter)
 	if err != nil {
 		return nil, err
 	}

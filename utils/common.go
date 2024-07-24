@@ -3,6 +3,7 @@ package utils
 import (
 	"errors"
 	"os"
+	"reflect"
 	"syscall"
 )
 
@@ -74,4 +75,12 @@ func SaturatingSub(a, b int) int {
 		return 0
 	}
 	return a - b
+}
+
+func IsNil(x interface{}) bool {
+	if x == nil {
+		return true
+	}
+	rv := reflect.ValueOf(x)
+	return rv.Kind() == reflect.Ptr && rv.IsNil()
 }

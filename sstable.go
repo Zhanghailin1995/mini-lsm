@@ -80,7 +80,7 @@ func createFileObjectSizeOnly(size int64) *FileObject {
 }
 
 func (f *FileObject) Close() error {
-	println("close file", f.file.Name())
+	//println("close file", f.file.Name())
 	return f.file.Close()
 }
 
