@@ -108,9 +108,24 @@ func ReadLsmStorageState[T any](lsm *LsmStorageInner, f func(*LsmStorageState) T
 	return f(lsm.state)
 }
 
+func UpdateLsmStorageState(lsm *LsmStorageInner, f func(*LsmStorageInner)) {
+	lsm.rwLock.Lock()
+	defer lsm.rwLock.Unlock()
+	f(lsm)
+}
+
 type LevelSsTables struct {
 	level    uint32
 	ssTables []uint32
+}
+
+func (ls *LevelSsTables) Clone() *LevelSsTables {
+	ssTables := make([]uint32, len(ls.ssTables))
+	copy(ssTables, ls.ssTables)
+	return &LevelSsTables{
+		level:    ls.level,
+		ssTables: ssTables,
+	}
 }
 
 type LsmStorageState struct {
@@ -169,6 +184,9 @@ func CreateLsmStorageState(options *LsmStorageOptions) *LsmStorageState {
 			}
 		}
 		break
+	case Tiered:
+		opt := options.CompactionOptions.Opt.(*TieredCompactionOptions)
+		levels = make([]*LevelSsTables, 0, opt.NumTiers)
 	default:
 		panic("unsupported compaction type")
 	}
@@ -247,6 +265,13 @@ func OpenLsmStorageInner(path string, options *LsmStorageOptions) (*LsmStorageIn
 			CompactionType: Simple,
 			Controller:     NewSimpleLeveledCompactionController(options.CompactionOptions.Opt.(*SimpleLeveledCompactionOptions)),
 		}
+	} else if options.CompactionOptions.CompactionType == Tiered {
+		cc = &CompactionController{
+			CompactionType: Tiered,
+			Controller:     NewTieredCompactionController(options.CompactionOptions.Opt.(*TieredCompactionOptions)),
+		}
+	} else {
+		panic("unsupported compaction type")
 	}
 
 	storage := &LsmStorageInner{
@@ -341,7 +366,12 @@ func (lsm *LsmStorageInner) ForceFlushNextImmMemtable() error {
 		mem := snapshot.immMemTable[len(snapshot.immMemTable)-1]
 		snapshot.immMemTable = snapshot.immMemTable[:len(snapshot.immMemTable)-1]
 		utils.Assert(mem.id == sstId, "sst id not match")
-		snapshot.l0SsTables = append([]uint32{sstId}, snapshot.l0SsTables...)
+		if lsm.compactionController.FlushToL0() {
+			snapshot.l0SsTables = append([]uint32{sstId}, snapshot.l0SsTables...)
+		} else {
+			// In tiered compaction, create a new tier
+			snapshot.levels = append([]*LevelSsTables{{level: sstId, ssTables: []uint32{sstId}}}, snapshot.levels...)
+		}
 		fmt.Printf("flushed %d.sst with size=%d\r\n", sstId, sst.TableSize())
 		snapshot.sstables[sstId] = sst
 		lsm.state = snapshot

@@ -53,6 +53,12 @@ func (cc *CompactionController) GenerateCompactionTask(snapshot *LsmStorageState
 			compactionType: Simple,
 			task:           task,
 		}
+	case Tiered:
+		task := cc.Controller.(*TieredCompactionController).GenerateCompactionTask(snapshot)
+		return &CompactionTask{
+			compactionType: Tiered,
+			task:           task,
+		}
 	case NoCompaction:
 		panic("unreachable!")
 	default:
@@ -67,6 +73,10 @@ func (cc *CompactionController) ApplyCompactionResult(task *CompactionTask, snap
 		slcc := cc.Controller.(*SimpleLeveledCompactionController)
 		slct := task.task.(*SimpleLeveledCompactionTask)
 		return slcc.ApplyCompactionResult(slct, snapshot, output)
+	case Tiered:
+		tcc := cc.Controller.(*TieredCompactionController)
+		tct := task.task.(*TieredCompactionTask)
+		return tcc.ApplyCompactionResult(snapshot, tct, output)
 	default:
 		panic("unreachable!")
 	}
@@ -225,6 +235,25 @@ func (lsm *LsmStorageInner) compact(task *CompactionTask) ([]*SsTable, error) {
 			storageIter = twoMergeIter
 			return lsm.compactGenerateSstFromIter(storageIter, task.compactToBottomLevel())
 		}
+	case Tiered:
+		tct := task.task.(*TieredCompactionTask)
+		tiers := make([]StorageIterator, 0, len(tct.Tiers))
+		for _, tier := range tct.Tiers {
+			ssts := make([]*SsTable, 0, len(tier.SstIds))
+			for _, id := range tier.SstIds {
+				sst, ok := snapshot.sstables[id]
+				if !ok {
+					return nil, errors.New(fmt.Sprintf("sstable %d not found", id))
+				}
+				ssts = append(ssts, sst)
+			}
+			iter, err := CreateSstConcatIteratorAndSeekToFirst(ssts)
+			if err != nil {
+				return nil, err
+			}
+			tiers = append(tiers, iter)
+		}
+		return lsm.compactGenerateSstFromIter(CreateMergeIterator(tiers), task.compactToBottomLevel())
 	default:
 		return nil, errors.New("unsupported compaction type")
 	}
@@ -238,6 +267,11 @@ func (lsm *LsmStorageInner) ForceFullCompaction() error {
 	lsm.rwLock.RLock()
 	snapshot := lsm.state
 	lsm.rwLock.RUnlock()
+	// 简单描述一下不加锁为什么是安全的，因为我们采用的是写时复制，只需要保证在创建快照时是安全的即可
+	// 上面的snapshot是一个对lsm state的引用，并且是本地的变量，不会被其他线程修改
+	// 我们对其访问完全无需加锁，因为其他写线程并不会更新这个引用，写线程通过写锁完全复制一个快照，这个快照的引用是不指向
+	// 我们拿到的这个引用快照的，写线程在快照上更新状态，最后把这个快照更新到lsm state上，即使已经更新了lsm state，我们拿到的这个引用快照依旧是有效的
+	// 写线程全程持有state lock所以是安全的
 
 	l0SsTables := make([]uint32, 0, len(snapshot.sstables))
 	l0SsTables = append(l0SsTables, snapshot.l0SsTables...)
@@ -320,7 +354,9 @@ func (lsm *LsmStorageInner) updateState(ssts []*SsTable, l0Sstables []uint32, l1
 	}
 	utils.Assert(len(l0SsTablesMap) == 0, "l0 sstables not match")
 	state.l0SsTables = newL0SsTables
-	lsm.state = state
+	UpdateLsmStorageState(lsm, func(inner *LsmStorageInner) {
+		inner.state = state
+	})
 	return removeSsts
 }
 
