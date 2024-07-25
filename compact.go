@@ -34,8 +34,14 @@ func (ct *CompactionTask) compactToBottomLevel() bool {
 	if ct.compactionType == ForceFull {
 		return true
 	} else if ct.compactionType == Leveled {
+		task := ct.task.(*LeveledCompactionTask)
+		return task.IsLowerLevelBottomLevel
+	} else if ct.compactionType == Simple {
 		task := ct.task.(*SimpleLeveledCompactionTask)
 		return task.IsLowerLevelBottomLevel
+	} else if ct.compactionType == Tiered {
+		task := ct.task.(*TieredCompactionTask)
+		return task.BottomTierIncluded
 	}
 	return false
 }
@@ -59,6 +65,12 @@ func (cc *CompactionController) GenerateCompactionTask(snapshot *LsmStorageState
 			compactionType: Tiered,
 			task:           task,
 		}
+	case Leveled:
+		task := cc.Controller.(*LeveledCompactionController).GenerateCompactionTask(snapshot)
+		return &CompactionTask{
+			compactionType: Leveled,
+			task:           task,
+		}
 	case NoCompaction:
 		panic("unreachable!")
 	default:
@@ -72,11 +84,15 @@ func (cc *CompactionController) ApplyCompactionResult(task *CompactionTask, snap
 	case Simple:
 		slcc := cc.Controller.(*SimpleLeveledCompactionController)
 		slct := task.task.(*SimpleLeveledCompactionTask)
-		return slcc.ApplyCompactionResult(slct, snapshot, output)
+		return slcc.ApplyCompactionResult(snapshot, slct, output)
 	case Tiered:
 		tcc := cc.Controller.(*TieredCompactionController)
 		tct := task.task.(*TieredCompactionTask)
 		return tcc.ApplyCompactionResult(snapshot, tct, output)
+	case Leveled:
+		lcc := cc.Controller.(*LeveledCompactionController)
+		lct := task.task.(*LeveledCompactionTask)
+		return lcc.ApplyCompactionResult(snapshot, lct, output)
 	default:
 		panic("unreachable!")
 	}
@@ -218,6 +234,72 @@ func (lsm *LsmStorageInner) compact(task *CompactionTask) ([]*SsTable, error) {
 			upperIter := CreateMergeIterator(upperIters)
 			lowerSsts := make([]*SsTable, 0, len(slct.LowerLevelSstIds))
 			for _, id := range slct.LowerLevelSstIds {
+				sst, ok := snapshot.sstables[id]
+				if !ok {
+					return nil, errors.New(fmt.Sprintf("sstable %d not found", id))
+				}
+				lowerSsts = append(lowerSsts, sst)
+			}
+			lowerIter, err := CreateSstConcatIteratorAndSeekToFirst(lowerSsts)
+			if err != nil {
+				return nil, err
+			}
+			twoMergeIter, err := CreateTwoMergeIterator(upperIter, lowerIter)
+			if err != nil {
+				return nil, err
+			}
+			storageIter = twoMergeIter
+			return lsm.compactGenerateSstFromIter(storageIter, task.compactToBottomLevel())
+		}
+	case Leveled:
+		lct := task.task.(*LeveledCompactionTask)
+		if lct.UpperLevel != nil {
+			upperSsts := make([]*SsTable, 0, len(lct.UpperLevelSstIds))
+			for _, id := range lct.UpperLevelSstIds {
+				sst, ok := snapshot.sstables[id]
+				if !ok {
+					return nil, errors.New(fmt.Sprintf("sstable %d not found", id))
+				}
+				upperSsts = append(upperSsts, sst)
+			}
+			upperIter, err := CreateSstConcatIteratorAndSeekToFirst(upperSsts)
+			if err != nil {
+				return nil, err
+			}
+			lowerSsts := make([]*SsTable, 0, len(lct.LowerLevelSstIds))
+			for _, id := range lct.LowerLevelSstIds {
+				sst, ok := snapshot.sstables[id]
+				if !ok {
+					return nil, errors.New(fmt.Sprintf("sstable %d not found", id))
+				}
+				lowerSsts = append(lowerSsts, sst)
+			}
+			lowerIter, err := CreateSstConcatIteratorAndSeekToFirst(lowerSsts)
+			if err != nil {
+				return nil, err
+			}
+			twoMergeIter, err := CreateTwoMergeIterator(upperIter, lowerIter)
+			if err != nil {
+				return nil, err
+			}
+			storageIter = twoMergeIter
+			return lsm.compactGenerateSstFromIter(storageIter, task.compactToBottomLevel())
+		} else {
+			upperIters := make([]StorageIterator, 0, len(lct.UpperLevelSstIds))
+			for _, id := range lct.UpperLevelSstIds {
+				sst, ok := snapshot.sstables[id]
+				if !ok {
+					return nil, errors.New(fmt.Sprintf("sstable %d not found", id))
+				}
+				sstIter, err := CreateSsTableIteratorAndSeekToFirst(sst)
+				if err != nil {
+					return nil, err
+				}
+				upperIters = append(upperIters, sstIter)
+			}
+			upperIter := CreateMergeIterator(upperIters)
+			lowerSsts := make([]*SsTable, 0, len(lct.LowerLevelSstIds))
+			for _, id := range lct.LowerLevelSstIds {
 				sst, ok := snapshot.sstables[id]
 				if !ok {
 					return nil, errors.New(fmt.Sprintf("sstable %d not found", id))

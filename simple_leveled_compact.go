@@ -71,7 +71,7 @@ func (slcc *SimpleLeveledCompactionController) GenerateCompactionTask(snapshot *
 	return nil
 }
 
-func (slcc *SimpleLeveledCompactionController) ApplyCompactionResult(task *SimpleLeveledCompactionTask, snapshot *LsmStorageState, output []uint32) (*LsmStorageState, []uint32) {
+func (slcc *SimpleLeveledCompactionController) ApplyCompactionResult(snapshot *LsmStorageState, task *SimpleLeveledCompactionTask, output []uint32) (*LsmStorageState, []uint32) {
 	snapshot = snapshot.snapshot()
 	filesToRemove := make([]uint32, 0)
 	if task.UpperLevel != nil {

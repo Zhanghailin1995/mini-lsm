@@ -187,6 +187,16 @@ func CreateLsmStorageState(options *LsmStorageOptions) *LsmStorageState {
 	case Tiered:
 		opt := options.CompactionOptions.Opt.(*TieredCompactionOptions)
 		levels = make([]*LevelSsTables, 0, opt.NumTiers)
+		break
+	case Leveled:
+		opt := options.CompactionOptions.Opt.(*LeveledCompactionOptions)
+		levels = make([]*LevelSsTables, opt.MaxLevels)
+		for i := 0; i < int(opt.MaxLevels); i++ {
+			levels[i] = &LevelSsTables{
+				level:    uint32(i + 1),
+				ssTables: make([]uint32, 0),
+			}
+		}
 	default:
 		panic("unsupported compaction type")
 	}
@@ -269,6 +279,11 @@ func OpenLsmStorageInner(path string, options *LsmStorageOptions) (*LsmStorageIn
 		cc = &CompactionController{
 			CompactionType: Tiered,
 			Controller:     NewTieredCompactionController(options.CompactionOptions.Opt.(*TieredCompactionOptions)),
+		}
+	} else if options.CompactionOptions.CompactionType == Leveled {
+		cc = &CompactionController{
+			CompactionType: Leveled,
+			Controller:     NewLeveledCompactionController(options.CompactionOptions.Opt.(*LeveledCompactionOptions)),
 		}
 	} else {
 		panic("unsupported compaction type")

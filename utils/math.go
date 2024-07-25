@@ -26,3 +26,10 @@ func WrappingAddU32(a, b uint32) uint32 {
 		return uint32(x)
 	}
 }
+
+func MaxU32(a, b uint32) uint32 {
+	if a > b {
+		return a
+	}
+	return b
+}
