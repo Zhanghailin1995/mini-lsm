@@ -331,4 +331,5 @@ func TestTask4Integration(t *testing.T) {
 		assert.NoError(t, iter.Next())
 		assert.True(t, !iter.IsValid())
 	}
+	assert.NoError(t, storage.Close())
 }

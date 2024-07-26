@@ -21,26 +21,26 @@ const (
 )
 
 type CompactionTask struct {
-	compactionType CompactionType
-	task           interface{}
+	CompactionType CompactionType `json:"compactionType"`
+	Task           interface{}    `json:"task"`
 }
 
 type ForceFullCompactionTask struct {
-	l0Sstables []uint32
-	l1Sstables []uint32
+	L0Sstables []uint32 `json:"l0Sstables"`
+	L1Sstables []uint32 `json:"l1Sstables"`
 }
 
 func (ct *CompactionTask) compactToBottomLevel() bool {
-	if ct.compactionType == ForceFull {
+	if ct.CompactionType == ForceFull {
 		return true
-	} else if ct.compactionType == Leveled {
-		task := ct.task.(*LeveledCompactionTask)
+	} else if ct.CompactionType == Leveled {
+		task := ct.Task.(*LeveledCompactionTask)
 		return task.IsLowerLevelBottomLevel
-	} else if ct.compactionType == Simple {
-		task := ct.task.(*SimpleLeveledCompactionTask)
+	} else if ct.CompactionType == Simple {
+		task := ct.Task.(*SimpleLeveledCompactionTask)
 		return task.IsLowerLevelBottomLevel
-	} else if ct.compactionType == Tiered {
-		task := ct.task.(*TieredCompactionTask)
+	} else if ct.CompactionType == Tiered {
+		task := ct.Task.(*TieredCompactionTask)
 		return task.BottomTierIncluded
 	}
 	return false
@@ -56,20 +56,20 @@ func (cc *CompactionController) GenerateCompactionTask(snapshot *LsmStorageState
 	case Simple:
 		task := cc.Controller.(*SimpleLeveledCompactionController).GenerateCompactionTask(snapshot)
 		return &CompactionTask{
-			compactionType: Simple,
-			task:           task,
+			CompactionType: Simple,
+			Task:           task,
 		}
 	case Tiered:
 		task := cc.Controller.(*TieredCompactionController).GenerateCompactionTask(snapshot)
 		return &CompactionTask{
-			compactionType: Tiered,
-			task:           task,
+			CompactionType: Tiered,
+			Task:           task,
 		}
 	case Leveled:
 		task := cc.Controller.(*LeveledCompactionController).GenerateCompactionTask(snapshot)
 		return &CompactionTask{
-			compactionType: Leveled,
-			task:           task,
+			CompactionType: Leveled,
+			Task:           task,
 		}
 	case NoCompaction:
 		panic("unreachable!")
@@ -78,20 +78,29 @@ func (cc *CompactionController) GenerateCompactionTask(snapshot *LsmStorageState
 	}
 }
 
-func (cc *CompactionController) ApplyCompactionResult(task *CompactionTask, snapshot *LsmStorageState, output []uint32) (*LsmStorageState, []uint32) {
-	utils.Assert(task.compactionType == cc.CompactionType, "compaction type not match")
+func (cc *CompactionController) ApplyCompactionResult(snapshot *LsmStorageState, task *CompactionTask, output []uint32) (*LsmStorageState, []uint32) {
+	utils.Assert(task.CompactionType == cc.CompactionType, "compaction type not match")
 	switch cc.CompactionType {
 	case Simple:
 		slcc := cc.Controller.(*SimpleLeveledCompactionController)
-		slct := task.task.(*SimpleLeveledCompactionTask)
+		slct, ok := task.Task.(*SimpleLeveledCompactionTask)
+		if !ok {
+			panic("controller type not match")
+		}
 		return slcc.ApplyCompactionResult(snapshot, slct, output)
 	case Tiered:
 		tcc := cc.Controller.(*TieredCompactionController)
-		tct := task.task.(*TieredCompactionTask)
+		tct, ok := task.Task.(*TieredCompactionTask)
+		if !ok {
+			panic("controller type not match")
+		}
 		return tcc.ApplyCompactionResult(snapshot, tct, output)
 	case Leveled:
 		lcc := cc.Controller.(*LeveledCompactionController)
-		lct := task.task.(*LeveledCompactionTask)
+		lct, ok := task.Task.(*LeveledCompactionTask)
+		if !ok {
+			panic("controller type not match")
+		}
 		return lcc.ApplyCompactionResult(snapshot, lct, output)
 	default:
 		panic("unreachable!")
@@ -156,19 +165,19 @@ func (lsm *LsmStorageInner) compact(task *CompactionTask) ([]*SsTable, error) {
 
 	var storageIter StorageIterator
 
-	switch task.compactionType {
+	switch task.CompactionType {
 	case ForceFull:
-		fcTask := task.task.(*ForceFullCompactionTask)
-		l0Iters := make([]StorageIterator, 0, len(fcTask.l0Sstables))
-		for _, id := range fcTask.l0Sstables {
+		fcTask := task.Task.(*ForceFullCompactionTask)
+		l0Iters := make([]StorageIterator, 0, len(fcTask.L0Sstables))
+		for _, id := range fcTask.L0Sstables {
 			sstIter, err := CreateSsTableIteratorAndSeekToFirst(snapshot.sstables[id])
 			if err != nil {
 				return nil, err
 			}
 			l0Iters = append(l0Iters, sstIter)
 		}
-		l1Ssts := make([]*SsTable, 0, len(fcTask.l1Sstables))
-		for _, id := range fcTask.l1Sstables {
+		l1Ssts := make([]*SsTable, 0, len(fcTask.L1Sstables))
+		for _, id := range fcTask.L1Sstables {
 			sst, ok := snapshot.sstables[id]
 			if !ok {
 				return nil, errors.New(fmt.Sprintf("sstable %d not found", id))
@@ -186,7 +195,7 @@ func (lsm *LsmStorageInner) compact(task *CompactionTask) ([]*SsTable, error) {
 		storageIter = twoMergeIter
 		return lsm.compactGenerateSstFromIter(storageIter, task.compactToBottomLevel())
 	case Simple:
-		slct := task.task.(*SimpleLeveledCompactionTask)
+		slct := task.Task.(*SimpleLeveledCompactionTask)
 		if slct.UpperLevel != nil {
 			upperSsts := make([]*SsTable, 0, len(slct.UpperLevelSstIds))
 			for _, id := range slct.UpperLevelSstIds {
@@ -252,7 +261,7 @@ func (lsm *LsmStorageInner) compact(task *CompactionTask) ([]*SsTable, error) {
 			return lsm.compactGenerateSstFromIter(storageIter, task.compactToBottomLevel())
 		}
 	case Leveled:
-		lct := task.task.(*LeveledCompactionTask)
+		lct := task.Task.(*LeveledCompactionTask)
 		if lct.UpperLevel != nil {
 			upperSsts := make([]*SsTable, 0, len(lct.UpperLevelSstIds))
 			for _, id := range lct.UpperLevelSstIds {
@@ -318,7 +327,7 @@ func (lsm *LsmStorageInner) compact(task *CompactionTask) ([]*SsTable, error) {
 			return lsm.compactGenerateSstFromIter(storageIter, task.compactToBottomLevel())
 		}
 	case Tiered:
-		tct := task.task.(*TieredCompactionTask)
+		tct := task.Task.(*TieredCompactionTask)
 		tiers := make([]StorageIterator, 0, len(tct.Tiers))
 		for _, tier := range tct.Tiers {
 			ssts := make([]*SsTable, 0, len(tier.SstIds))
@@ -360,10 +369,10 @@ func (lsm *LsmStorageInner) ForceFullCompaction() error {
 	l1SsTables := make([]uint32, 0, len(snapshot.levels[0].ssTables))
 	l1SsTables = append(l1SsTables, snapshot.levels[0].ssTables...)
 	compactionTask := &CompactionTask{
-		compactionType: ForceFull,
-		task: &ForceFullCompactionTask{
-			l0Sstables: l0SsTables,
-			l1Sstables: l1SsTables,
+		CompactionType: ForceFull,
+		Task: &ForceFullCompactionTask{
+			L0Sstables: l0SsTables,
+			L1Sstables: l1SsTables,
 		},
 	}
 	ssts, err := lsm.compact(compactionTask)
@@ -447,7 +456,7 @@ func (lsm *LsmStorageInner) TriggerCompaction() error {
 		return state
 	})
 	task := lsm.compactionController.GenerateCompactionTask(snapshot)
-	if utils.IsNil(task.task) {
+	if utils.IsNil(task.Task) {
 		return nil
 	}
 	println("running compaction task")
@@ -460,8 +469,26 @@ func (lsm *LsmStorageInner) TriggerCompaction() error {
 	for _, sst := range ssts {
 		output = append(output, sst.Id())
 	}
+	sstsToRemove, filesToRemove, err := lsm.triggerCompaction(ssts, task, output)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("compaction done, %d files added, %d files removed\n", filesAdded, len(filesToRemove))
+	err = lsm.removeCompactedSst(sstsToRemove)
+	if err != nil {
+		return err
+	}
+	err = lsm.SyncDir()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (lsm *LsmStorageInner) triggerCompaction(ssts []*SsTable, task *CompactionTask, output []uint32) ([]*SsTable, []uint32, error) {
 	lsm.stateLock.Lock()
-	snapshot = ReadLsmStorageState(lsm, func(state *LsmStorageState) *LsmStorageState {
+	defer lsm.stateLock.Unlock()
+	snapshot := ReadLsmStorageState(lsm, func(state *LsmStorageState) *LsmStorageState {
 		return state.snapshot()
 	})
 	newSstIds := make([]uint32, 0)
@@ -471,7 +498,7 @@ func (lsm *LsmStorageInner) TriggerCompaction() error {
 		utils.Assert(!ok, "sstables already exists")
 		snapshot.sstables[sst.Id()] = sst
 	}
-	snapshot, filesToRemove := lsm.compactionController.ApplyCompactionResult(task, snapshot, output)
+	snapshot, filesToRemove := lsm.compactionController.ApplyCompactionResult(snapshot, task, output)
 	sstsToRemove := make([]*SsTable, 0, len(filesToRemove))
 	for _, id := range filesToRemove {
 		sst, ok := snapshot.sstables[id]
@@ -484,17 +511,19 @@ func (lsm *LsmStorageInner) TriggerCompaction() error {
 	lsm.rwLock.Lock()
 	lsm.state = snapshot
 	lsm.rwLock.Unlock()
-	lsm.stateLock.Unlock()
-	fmt.Printf("compaction done, %d files added, %d files removed\n", filesAdded, len(filesToRemove))
-	err = lsm.removeCompactedSst(sstsToRemove)
+	err := lsm.SyncDir()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	err = lsm.SyncDir()
+
+	err = lsm.manifest.AddRecord(&CompactionRecord{
+		CompactionTask: task,
+		SstIds:         output,
+	})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	return nil
+	return sstsToRemove, filesToRemove, nil
 }
 
 func (lsm *LsmStorageInner) triggerFlush() error {
@@ -530,6 +559,10 @@ func (lsm *LsmStorageInner) SpawnFlushThread(rx, tx chan struct{}) {
 
 func (lsm *LsmStorageInner) SpawnCompactionThread(rx, tx chan struct{}) {
 	if lsm.options.CompactionOptions.CompactionType == NoCompaction {
+		go func() {
+			<-rx
+			tx <- struct{}{}
+		}()
 		return
 	}
 	go func() {

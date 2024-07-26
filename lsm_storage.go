@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -22,10 +23,39 @@ type MiniLsm struct {
 }
 
 func (lsm *MiniLsm) Shutdown() error {
+	err := lsm.inner.SyncDir()
+	if err != nil {
+		return err
+	}
 	lsm.flushShutdownNotifier <- struct{}{}
 	lsm.compactionShutdownNotifier <- struct{}{}
 	<-lsm.compactionShutdownDoneNotifier
 	<-lsm.flushShutdownDoneNotifier
+	if !ReadLsmStorageState(lsm.inner, func(state *LsmStorageState) bool {
+		return state.memTable.IsEmpty()
+	}) {
+		err := lsm.inner.FreezeMemtableWithMemtable(CreateMemTable(lsm.inner.getNextSstId()))
+		if err != nil {
+			return err
+		}
+	}
+	for {
+		lsm.inner.rwLock.RLock()
+		x := len(lsm.inner.state.immMemTable) == 0
+		lsm.inner.rwLock.RUnlock()
+		if !x {
+			err := lsm.inner.ForceFlushNextImmMemtable()
+			if err != nil {
+				return err
+			}
+		} else {
+			break
+		}
+	}
+	err = lsm.inner.SyncDir()
+	if err != nil {
+		return err
+	}
 	return lsm.inner.Close()
 }
 
@@ -97,9 +127,10 @@ type LsmStorageInner struct {
 	path                 string
 	blockCache           *BlockCache
 	nextSstId            uint32
+	options              *LsmStorageOptions
 	state                *LsmStorageState
 	compactionController *CompactionController
-	options              *LsmStorageOptions
+	manifest             *Manifest
 }
 
 func ReadLsmStorageState[T any](lsm *LsmStorageInner, f func(*LsmStorageState) T) T {
@@ -257,10 +288,11 @@ func DefaultForWeek2Test(compactionOptions *CompactionOptions) *LsmStorageOption
 	}
 }
 
-func OpenLsmStorageInner(path string, options *LsmStorageOptions) (*LsmStorageInner, error) {
+func OpenLsmStorageInner(p string, options *LsmStorageOptions) (*LsmStorageInner, error) {
 
-	// if path is not exist, create it
-	err := utils.CreateDirIfNotExist(path)
+	// if p is not exist, create it
+	err := utils.CreateDirIfNotExist(p)
+	state := CreateLsmStorageState(options)
 	if err != nil {
 		return nil, err
 	}
@@ -288,14 +320,77 @@ func OpenLsmStorageInner(path string, options *LsmStorageOptions) (*LsmStorageIn
 	} else {
 		panic("unsupported compaction type")
 	}
+	blockCache := NewBlockCache()
+	var manifest *Manifest
+	var createManifestErr error
+	var nextSstId uint32 = 1
+	manifestPath := path.Join(p, "MANIFEST")
+	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
+		// 创建manifest文件
+		manifest, createManifestErr = NewManifest(manifestPath)
+		if createManifestErr != nil {
+			panic("failed to create manifest file")
+		}
+	} else if err == nil {
+		m, records, err := RecoverManifest(manifestPath)
+		if err != nil {
+			return nil, err
+		}
+		// 从manifest中恢复状态
+		for _, record := range records {
+			switch record.recordType() {
+			case Flush:
+				flush := record.(*FlushRecord)
+				if cc.FlushToL0() {
+					state.l0SsTables = append([]uint32{uint32(flush.Flush)}, state.l0SsTables...)
+				} else {
+					// In tiered compaction, create a new tier
+					state.levels = append([]*LevelSsTables{{level: uint32(flush.Flush), ssTables: []uint32{uint32(flush.Flush)}}}, state.levels...)
+				}
+				nextSstId = utils.MaxU32(nextSstId, uint32(flush.Flush))
+			case NewMemtable:
+				panic("unimplemented")
+			case Compaction:
+				compaction := record.(*CompactionRecord)
+				newState, _ := cc.ApplyCompactionResult(state, compaction.CompactionTask, compaction.SstIds)
+				state = newState
+				nextSstId = utils.MaxU32(nextSstId, slices.Max(compaction.SstIds))
+			default:
+				panic("unknown record type")
+			}
+		}
+		sstIds := make([]uint32, 0)
+		sstIds = append(sstIds, state.l0SsTables...)
+		for _, level := range state.levels {
+			sstIds = append(sstIds, level.ssTables...)
+		}
+		for _, id := range sstIds {
+			fileObj := utils.Unwrap(OpenFileObject(pathOfSstStatic(p, id)))
+			sst, err := OpenSsTable(id, blockCache, fileObj)
+			if err != nil {
+				return nil, err
+			}
+			state.sstables[id] = sst
+		}
+		nextSstId++
+		state.memTable = CreateMemTable(nextSstId)
+
+		nextSstId++
+		manifest = m
+	}
 
 	storage := &LsmStorageInner{
-		state:                CreateLsmStorageState(options),
-		path:                 path,
-		blockCache:           NewBlockCache(),
-		nextSstId:            1,
+		state:                state,
+		path:                 p,
+		blockCache:           blockCache,
+		nextSstId:            nextSstId,
 		compactionController: cc,
 		options:              options,
+		manifest:             manifest,
+	}
+	err = storage.SyncDir()
+	if err != nil {
+		return nil, err
 	}
 	return storage, nil
 }
@@ -312,6 +407,10 @@ func (lsm *LsmStorageInner) Close() error {
 		}
 	}
 	lsm.state = snapshot
+	err := lsm.manifest.Close()
+	if err != nil {
+		return err
+	}
 	lsm.rwLock.Unlock()
 	lsm.stateLock.Unlock()
 	return nil
@@ -335,10 +434,7 @@ func (lsm *LsmStorageInner) getNextSstId() uint32 {
 	return sstId
 }
 
-func (lsm *LsmStorageInner) ForceFreezeMemTable() error {
-	memtableId := lsm.getNextSstId()
-	memtable := CreateMemTable(memtableId)
-
+func (lsm *LsmStorageInner) FreezeMemtableWithMemtable(memtable *MemTable) error {
 	lsm.rwLock.Lock()
 	defer lsm.rwLock.Unlock()
 	// 使用快照机制来减少锁的粒度
@@ -346,6 +442,17 @@ func (lsm *LsmStorageInner) ForceFreezeMemTable() error {
 	snapshot.immMemTable = append([]*MemTable{snapshot.memTable}, snapshot.immMemTable...)
 	snapshot.memTable = memtable
 	lsm.state = snapshot
+	return nil
+}
+
+func (lsm *LsmStorageInner) ForceFreezeMemTable() error {
+	memtableId := lsm.getNextSstId()
+	memtable := CreateMemTable(memtableId)
+
+	err := lsm.FreezeMemtableWithMemtable(memtable)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -393,6 +500,10 @@ func (lsm *LsmStorageInner) ForceFlushNextImmMemtable() error {
 		lsm.rwLock.Unlock()
 	}
 	if err = lsm.SyncDir(); err != nil {
+		return err
+	}
+	err = lsm.manifest.AddRecord(&FlushRecord{Flush: sstId})
+	if err != nil {
 		return err
 	}
 	return nil

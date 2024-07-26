@@ -82,6 +82,7 @@ func TestTask2StorageIntegration(t *testing.T) {
 	assert.True(t, err == nil)
 	v, err = storage.Get(Key([]byte("2")))
 	assert.True(t, err == nil && v == nil)
+	assert.NoError(t, storage.Close())
 }
 
 func TestTask3StorageIntegration(t *testing.T) {
@@ -161,6 +162,7 @@ func TestTask3StorageIntegration(t *testing.T) {
 		t.Errorf("Expected > %d, got %d", previousApproximateSize, storage.state.immMemTable[0].ApproximateSize())
 	}
 	storage.rwLock.RUnlock()
+	assert.NoError(t, storage.Close())
 }
 
 func TestTask3FreezeOnCapacity(t *testing.T) {
@@ -194,6 +196,8 @@ func TestTask3FreezeOnCapacity(t *testing.T) {
 	if len(storage.state.immMemTable) <= numImmMemTables {
 		t.Errorf("no more memtable frozen? %d, %d", len(storage.state.immMemTable), numImmMemTables)
 	}
+	storage.rwLock.RUnlock()
+	assert.NoError(t, storage.Close())
 }
 
 func TestTask4StorageIntegration(t *testing.T) {
@@ -242,4 +246,5 @@ func TestTask4StorageIntegration(t *testing.T) {
 	v, err = storage.Get(Key([]byte("4")))
 	assert.True(t, err == nil)
 	assert.Equal(t, v, []byte("23333"))
+	assert.NoError(t, storage.Close())
 }

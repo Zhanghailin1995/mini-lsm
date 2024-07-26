@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
+	"io/ioutil"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -311,4 +313,22 @@ func CompactionBench(lsm *MiniLsm, t *testing.T) {
 	}
 	CheckIterResultByKey1(t, utils.Unwrap(lsm.Scan(UnboundBytes(), UnboundBytes())), expectedKeyValuePairs)
 	println("This test case does not guarantee your compaction algorithm produces a LSM state as expected. It only does minimal checks on the size of the levels. Please use the compaction simulator to check if the compaction is correctly going on.")
+}
+
+func dumpFilesInDir(path string) {
+	fmt.Println("--- DIR DUMP ---")
+
+	files, err := ioutil.ReadDir(path)
+	if err != nil {
+		fmt.Println("Error reading directory:", err)
+		return
+	}
+
+	for _, f := range files {
+		fmt.Printf("%s, size=%.3fKB\n", filepath.Join(path, f.Name()), float64(f.Size())/1024.0)
+	}
+}
+
+func b(s string) []byte {
+	return []byte(s)
 }
