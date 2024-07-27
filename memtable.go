@@ -12,6 +12,7 @@ type MemTable struct {
 	skipMap         *skiplist.SkipList
 	id              uint32
 	approximateSize uint32
+	wal             *Wal
 }
 
 var CompareKeyFunc = skiplist.GreaterThanFunc(func(a, b interface{}) int {
@@ -23,7 +24,44 @@ func CreateMemTable(id uint32) *MemTable {
 		skipMap:         skiplist.New(CompareKeyFunc),
 		id:              id,
 		approximateSize: 0,
+		wal:             nil,
 	}
+}
+
+func CreateWithWal(id uint32, p string) (*MemTable, error) {
+	wal, err := NewWal(p)
+	if err != nil {
+		return nil, err
+	}
+	m := &MemTable{
+		skipMap:         skiplist.New(CompareKeyFunc),
+		id:              id,
+		approximateSize: 0,
+		wal:             wal,
+	}
+	return m, nil
+}
+
+func RecoverFromWal(id uint32, p string) (*MemTable, error) {
+	skipMap := skiplist.New(CompareKeyFunc)
+	wal, err := RecoverWal(p, skipMap)
+	if err != nil {
+		return nil, err
+	}
+	m := &MemTable{
+		skipMap:         skipMap,
+		id:              id,
+		approximateSize: 0,
+		wal:             wal,
+	}
+	return m, nil
+}
+
+func (m *MemTable) Close() error {
+	if m.wal != nil {
+		return m.wal.Close()
+	}
+	return nil
 }
 
 func (m *MemTable) Put(key KeyType, value []byte) error {
@@ -32,6 +70,12 @@ func (m *MemTable) Put(key KeyType, value []byte) error {
 	m.skipMap.Set(key, utils.Copy(value))
 	m.rwLock.Unlock()
 	atomic.AddUint32(&m.approximateSize, estimatedSize)
+	if m.wal != nil {
+		err := m.wal.Put(key, value)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -41,6 +85,13 @@ func (m *MemTable) Get(key KeyType) []byte {
 	v, ok := m.skipMap.GetValue(key)
 	if ok {
 		return utils.Copy(v.([]byte))
+	}
+	return nil
+}
+
+func (m *MemTable) SyncWal() error {
+	if m.wal != nil {
+		return m.wal.Sync()
 	}
 	return nil
 }

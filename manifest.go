@@ -161,7 +161,6 @@ func (m *Manifest) AddRecordWhenInit(record ManifestRecord) error {
 	}
 	l := 1 + len(bytes)
 	buf := make([]byte, 4+l)
-	println(4 + l)
 	binary.BigEndian.PutUint32(buf[:4], uint32(l))
 	buf[4] = byte(record.recordType())
 	copy(buf[5:], bytes)

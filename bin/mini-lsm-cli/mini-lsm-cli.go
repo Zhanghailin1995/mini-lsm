@@ -26,11 +26,37 @@ func main() {
 			CompactionType: mini_lsm.NoCompaction,
 			Opt:            nil,
 		}
-	} else {
+	} else if *compaction == "leveled" {
 		compactionOptions = &mini_lsm.CompactionOptions{
 			CompactionType: mini_lsm.Leveled,
-			Opt:            nil,
+			Opt: &mini_lsm.LeveledCompactionOptions{
+				Level0FileNumCompactionTrigger: 4,
+				MaxLevels:                      4,
+				BaseLevelSizeMb:                128,
+				LevelSizeMultiplier:            2,
+			},
 		}
+	} else if *compaction == "tiered" {
+		compactionOptions = &mini_lsm.CompactionOptions{
+			CompactionType: mini_lsm.Tiered,
+			Opt: &mini_lsm.TieredCompactionOptions{
+				NumTiers:                    3,
+				MaxSizeAmplificationPercent: 200,
+				SizeRatio:                   1,
+				MinMergeWidth:               2,
+			},
+		}
+	} else if *compaction == "simple" {
+		compactionOptions = &mini_lsm.CompactionOptions{
+			CompactionType: mini_lsm.Simple,
+			Opt: &mini_lsm.SimpleLeveledCompactionOptions{
+				Level0FileNumCompactionTrigger: 2,
+				MaxLevels:                      4,
+				SizeRatioPercent:               200,
+			},
+		}
+	} else {
+		panic("invalid compaction strategy")
 	}
 
 	lsm := utils.Unwrap(mini_lsm.Open(*dbPath, &mini_lsm.LsmStorageOptions{

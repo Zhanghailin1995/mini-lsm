@@ -31,6 +31,16 @@ func (lsm *MiniLsm) Shutdown() error {
 	lsm.compactionShutdownNotifier <- struct{}{}
 	<-lsm.compactionShutdownDoneNotifier
 	<-lsm.flushShutdownDoneNotifier
+
+	if lsm.inner.options.EnableWal {
+		if err := lsm.inner.Sync(); err != nil {
+			return err
+		}
+		if err := lsm.inner.SyncDir(); err != nil {
+			return err
+		}
+		return lsm.inner.Close()
+	}
 	if !ReadLsmStorageState(lsm.inner, func(state *LsmStorageState) bool {
 		return state.memTable.IsEmpty()
 	}) {
@@ -74,6 +84,10 @@ func Open(p string, options *LsmStorageOptions) (*MiniLsm, error) {
 	inner.SpawnCompactionThread(lsm.compactionShutdownNotifier, lsm.compactionShutdownDoneNotifier)
 	inner.SpawnFlushThread(lsm.flushShutdownNotifier, lsm.flushShutdownDoneNotifier)
 	return lsm, nil
+}
+
+func (lsm *MiniLsm) Sync() error {
+	return lsm.inner.Sync()
 }
 
 func (lsm *MiniLsm) Get(key []byte) ([]byte, error) {
@@ -327,29 +341,43 @@ func OpenLsmStorageInner(p string, options *LsmStorageOptions) (*LsmStorageInner
 	manifestPath := path.Join(p, "MANIFEST")
 	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
 		// 创建manifest文件
+		if options.EnableWal {
+			state.memTable, err = CreateWithWal(state.memTable.id, pathOfWalStatic(p, state.memTable.id))
+			if err != nil {
+				return nil, err
+			}
+		}
 		manifest, createManifestErr = NewManifest(manifestPath)
 		if createManifestErr != nil {
 			panic("failed to create manifest file")
+		}
+		if err := manifest.AddRecord(&NewMemtableRecord{NewMemtable: state.memTable.id}); err != nil {
+			return nil, err
 		}
 	} else if err == nil {
 		m, records, err := RecoverManifest(manifestPath)
 		if err != nil {
 			return nil, err
 		}
+		memtables := make(map[uint32]struct{})
 		// 从manifest中恢复状态
 		for _, record := range records {
 			switch record.recordType() {
 			case Flush:
 				flush := record.(*FlushRecord)
+				_, ok := memtables[flush.Flush]
+				delete(memtables, flush.Flush)
+				utils.Assert(ok, "memtable not found")
 				if cc.FlushToL0() {
-					state.l0SsTables = append([]uint32{uint32(flush.Flush)}, state.l0SsTables...)
+					state.l0SsTables = append([]uint32{flush.Flush}, state.l0SsTables...)
 				} else {
 					// In tiered compaction, create a new tier
-					state.levels = append([]*LevelSsTables{{level: uint32(flush.Flush), ssTables: []uint32{uint32(flush.Flush)}}}, state.levels...)
+					state.levels = append([]*LevelSsTables{{level: flush.Flush, ssTables: []uint32{flush.Flush}}}, state.levels...)
 				}
-				nextSstId = utils.MaxU32(nextSstId, uint32(flush.Flush))
+				nextSstId = utils.MaxU32(nextSstId, flush.Flush)
 			case NewMemtable:
-				panic("unimplemented")
+				nextSstId = utils.MaxU32(nextSstId, record.(*NewMemtableRecord).NewMemtable)
+				memtables[record.(*NewMemtableRecord).NewMemtable] = struct{}{}
 			case Compaction:
 				compaction := record.(*CompactionRecord)
 				newState, _ := cc.ApplyCompactionResult(state, compaction.CompactionTask, compaction.SstIds)
@@ -359,6 +387,7 @@ func OpenLsmStorageInner(p string, options *LsmStorageOptions) (*LsmStorageInner
 				panic("unknown record type")
 			}
 		}
+		sstCnt := 0
 		sstIds := make([]uint32, 0)
 		sstIds = append(sstIds, state.l0SsTables...)
 		for _, level := range state.levels {
@@ -371,10 +400,47 @@ func OpenLsmStorageInner(p string, options *LsmStorageOptions) (*LsmStorageInner
 				return nil, err
 			}
 			state.sstables[id] = sst
+			sstCnt++
 		}
+		fmt.Printf("%d SSTs opened\r\n", sstCnt)
 		nextSstId++
-		state.memTable = CreateMemTable(nextSstId)
-
+		if options.EnableWal {
+			walCnt := 0
+			// memtables中剩下的是没有被flush的memtable
+			notFlushedMemtables := make([]uint32, 0, len(memtables))
+			for id := range memtables {
+				notFlushedMemtables = append(notFlushedMemtables, id)
+			}
+			slices.Sort(notFlushedMemtables)
+			for _, id := range notFlushedMemtables {
+				memtable, err := RecoverFromWal(id, pathOfWalStatic(p, id))
+				if err != nil {
+					return nil, err
+				}
+				if !memtable.IsEmpty() {
+					state.immMemTable = append([]*MemTable{memtable}, state.immMemTable...)
+					walCnt++
+				} else {
+					err := memtable.Close()
+					if err != nil {
+						return nil, err
+					}
+					if err := os.Remove(pathOfWalStatic(p, id)); err != nil {
+						return nil, err
+					}
+				}
+			}
+			fmt.Printf("%d WALs recovered\r\n", walCnt)
+			state.memTable, err = CreateWithWal(nextSstId, pathOfWalStatic(p, nextSstId))
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			state.memTable = CreateMemTable(nextSstId)
+		}
+		if err := m.AddRecordWhenInit(&NewMemtableRecord{NewMemtable: state.memTable.id}); err != nil {
+			return nil, err
+		}
 		nextSstId++
 		manifest = m
 	}
@@ -411,9 +477,28 @@ func (lsm *LsmStorageInner) Close() error {
 	if err != nil {
 		return err
 	}
+	if lsm.options.EnableWal {
+		err = lsm.state.memTable.Close()
+		if err != nil {
+			return err
+		}
+		for _, memtable := range lsm.state.immMemTable {
+			err = memtable.Close()
+			if err != nil {
+				return err
+			}
+		}
+	}
 	lsm.rwLock.Unlock()
 	lsm.stateLock.Unlock()
 	return nil
+}
+
+func (lsm *LsmStorageInner) Sync() error {
+	memtable := ReadLsmStorageState(lsm, func(state *LsmStorageState) *MemTable {
+		return state.memTable
+	})
+	return memtable.SyncWal()
 }
 
 func (lsm *LsmStorageInner) tryFreeze(estimatedSize uint32) error {
@@ -436,21 +521,40 @@ func (lsm *LsmStorageInner) getNextSstId() uint32 {
 
 func (lsm *LsmStorageInner) FreezeMemtableWithMemtable(memtable *MemTable) error {
 	lsm.rwLock.Lock()
-	defer lsm.rwLock.Unlock()
 	// 使用快照机制来减少锁的粒度
 	snapshot := lsm.state.snapshot()
-	snapshot.immMemTable = append([]*MemTable{snapshot.memTable}, snapshot.immMemTable...)
+	oldMemtable := snapshot.memTable
+	snapshot.immMemTable = append([]*MemTable{oldMemtable}, snapshot.immMemTable...)
 	snapshot.memTable = memtable
 	lsm.state = snapshot
+	lsm.rwLock.Unlock()
+	// 只在memtable被冻结时才Sync,这似乎不妥，会在掉电时丢失数据
+	if err := oldMemtable.SyncWal(); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (lsm *LsmStorageInner) ForceFreezeMemTable() error {
 	memtableId := lsm.getNextSstId()
-	memtable := CreateMemTable(memtableId)
+	var memtable *MemTable
+	if lsm.options.EnableWal {
+		if m, err := CreateWithWal(memtableId, lsm.pathOfWal(memtableId)); err != nil {
+			return err
+		} else {
+			memtable = m
+		}
+	} else {
+		memtable = CreateMemTable(memtableId)
+	}
 
-	err := lsm.FreezeMemtableWithMemtable(memtable)
-	if err != nil {
+	if err := lsm.FreezeMemtableWithMemtable(memtable); err != nil {
+		return err
+	}
+	if err := lsm.manifest.AddRecord(&NewMemtableRecord{NewMemtable: memtableId}); err != nil {
+		return err
+	}
+	if err := lsm.SyncDir(); err != nil {
 		return err
 	}
 	return nil
@@ -499,11 +603,20 @@ func (lsm *LsmStorageInner) ForceFlushNextImmMemtable() error {
 		lsm.state = snapshot
 		lsm.rwLock.Unlock()
 	}
-	if err = lsm.SyncDir(); err != nil {
-		return err
+	if lsm.options.EnableWal {
+		// remove the wal file
+		if err := flushMemtable.Close(); err != nil {
+			return err
+		}
+		if err := os.Remove(lsm.pathOfWal(sstId)); err != nil {
+			return err
+		}
 	}
 	err = lsm.manifest.AddRecord(&FlushRecord{Flush: sstId})
 	if err != nil {
+		return err
+	}
+	if err = lsm.SyncDir(); err != nil {
 		return err
 	}
 	return nil
@@ -535,6 +648,14 @@ func pathOfSstStatic(path0 string, id uint32) string {
 
 func (lsm *LsmStorageInner) pathOfSst(id uint32) string {
 	return pathOfSstStatic(lsm.path, id)
+}
+
+func pathOfWalStatic(path0 string, id uint32) string {
+	return path.Join(path0, fmt.Sprintf("%05d.wal", id))
+}
+
+func (lsm *LsmStorageInner) pathOfWal(id uint32) string {
+	return pathOfWalStatic(lsm.path, id)
 }
 
 func keyWithin(userKey, tableBegin, tableEnd KeyType) bool {
