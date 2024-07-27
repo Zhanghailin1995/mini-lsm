@@ -742,42 +742,97 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 	return nil, nil
 }
 
-func (lsm *LsmStorageInner) Put(key KeyType, value []byte) error {
-	utils.Assert(len(value) != 0, "value cannot be empty")
-	utils.Assert(len(key.Val) != 0, "key cannot be empty")
-	var size uint32
-	lsm.rwLock.RLock()
-	err := lsm.state.memTable.Put(key, value)
-	if err != nil {
-		lsm.rwLock.RUnlock()
-		return err
-	}
-	size = lsm.state.memTable.ApproximateSize()
-	lsm.rwLock.RUnlock()
-	err = lsm.tryFreeze(size)
-	if err != nil {
-		return err
+const (
+	Put uint8 = 1
+	Del uint8 = 2
+)
+
+type WriteBatchRecord interface {
+	Type() uint8
+	IsWriteOp() bool
+}
+
+type PutOp struct {
+	K []byte
+	V []byte
+}
+
+func (p *PutOp) Type() uint8 {
+	return Put
+}
+
+func (p *PutOp) IsWriteOp() bool {
+	return true
+}
+
+type DelOp struct {
+	K []byte
+}
+
+func (d *DelOp) Type() uint8 {
+	return Del
+}
+
+func (d *DelOp) IsWriteOp() bool {
+	return true
+}
+
+func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
+	for _, record := range batch {
+		switch record.Type() {
+		case Del:
+			delOp := record.(*DelOp)
+			utils.Assert(len(delOp.K) != 0, "key cannot be empty")
+			var size uint32
+			lsm.rwLock.RLock()
+			err := lsm.state.memTable.Put(Key(delOp.K), []byte{})
+			if err != nil {
+				lsm.rwLock.RUnlock()
+				return err
+			}
+			size = lsm.state.memTable.ApproximateSize()
+			lsm.rwLock.RUnlock()
+
+			err = lsm.tryFreeze(size)
+			if err != nil {
+				return err
+			}
+		case Put:
+			putOp := record.(*PutOp)
+			utils.Assert(len(putOp.K) != 0, "key cannot be empty")
+			utils.Assert(len(putOp.V) != 0, "value cannot be empty")
+
+			var size uint32
+			lsm.rwLock.RLock()
+			err := lsm.state.memTable.Put(Key(putOp.K), putOp.V)
+			if err != nil {
+				lsm.rwLock.RUnlock()
+				return err
+			}
+			size = lsm.state.memTable.ApproximateSize()
+			lsm.rwLock.RUnlock()
+			err = lsm.tryFreeze(size)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
-func (lsm *LsmStorageInner) Delete(key KeyType) error {
-	utils.Assert(len(key.Val) != 0, "key cannot be empty")
-	var size uint32
-	lsm.rwLock.RLock()
-	err := lsm.state.memTable.Put(key, []byte{})
-	if err != nil {
-		lsm.rwLock.RUnlock()
-		return err
+func (lsm *LsmStorageInner) Put(key KeyType, value []byte) error {
+	r := &PutOp{
+		K: key.Val,
+		V: value,
 	}
-	size = lsm.state.memTable.ApproximateSize()
-	lsm.rwLock.RUnlock()
+	return lsm.WriteBatch([]WriteBatchRecord{r})
+}
 
-	err = lsm.tryFreeze(size)
-	if err != nil {
-		return err
+func (lsm *LsmStorageInner) Delete(key KeyType) error {
+	r := &DelOp{
+		K: key.Val,
 	}
-	return nil
+	return lsm.WriteBatch([]WriteBatchRecord{r})
 }
 
 func rangeOverlap(userBegin, userEnd KeyBound, tableBegin, tableEnd KeyType) bool {

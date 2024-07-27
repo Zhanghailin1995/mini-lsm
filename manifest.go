@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"github.com/Zhanghailin1995/mini-lsm/utils"
 	"io"
 	"os"
 	"sync"
@@ -90,12 +91,18 @@ func RecoverManifest(p string) (*Manifest, []ManifestRecord, error) {
 		if idx >= contentLen {
 			break
 		}
+		// | len | record type | record | checksum |
 		l := binary.BigEndian.Uint32(content)
 		content = content[4:]
+		recordBytesWithType := content[:int(l)]
 		recordType := content[0]
-		content = content[1:]
-		recordBytes := content[:int(l)-1]
-		content = content[int(l)-1:]
+		recordBytes := recordBytesWithType[1:]
+		content = content[int(l):]
+		checksum := binary.BigEndian.Uint32(content)
+		content = content[4:]
+		if checksum != utils.Crc32(recordBytesWithType) {
+			return nil, nil, errors.New("checksum error")
+		}
 		var record ManifestRecord
 		var unknownTask json.RawMessage
 		switch ManifestRecordType(recordType) {
@@ -139,7 +146,7 @@ func RecoverManifest(p string) (*Manifest, []ManifestRecord, error) {
 		}
 
 		records = append(records, record)
-		idx += int(l) + 4
+		idx += int(l) + 4 + 4
 	}
 	return &Manifest{
 		file: f,
@@ -154,16 +161,18 @@ func (m *Manifest) AddRecordWhenInit(record ManifestRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// write record to file
-	// | len | record type | record |
+	// | len | record type | record | checksum |
 	bytes, err2 := json.Marshal(record)
 	if err2 != nil {
 		return err2
 	}
 	l := 1 + len(bytes)
-	buf := make([]byte, 4+l)
+	buf := make([]byte, 4+l+4)
 	binary.BigEndian.PutUint32(buf[:4], uint32(l))
 	buf[4] = byte(record.recordType())
 	copy(buf[5:], bytes)
+	checksum := utils.Crc32(buf[4 : 4+l])
+	binary.BigEndian.PutUint32(buf[4+l:], checksum)
 	// write record type
 	for {
 		n, err := m.file.Write(buf)

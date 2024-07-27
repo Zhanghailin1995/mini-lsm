@@ -67,7 +67,7 @@ func (m *MemTable) Close() error {
 func (m *MemTable) Put(key KeyType, value []byte) error {
 	estimatedSize := uint32(len(key.Val) + len(value))
 	m.rwLock.Lock()
-	m.skipMap.Set(key, utils.Copy(value))
+	m.skipMap.Set(key.Clone(), utils.Copy(value))
 	m.rwLock.Unlock()
 	atomic.AddUint32(&m.approximateSize, estimatedSize)
 	if m.wal != nil {

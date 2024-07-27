@@ -56,7 +56,11 @@ func (s *SsTableBuilder) finishBlock() {
 	})
 	s.firstKey = Key([]byte{})
 	s.lastKey = Key([]byte{})
+	checksum := utils.Crc32(encodedBlock)
+	checkSumBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(checkSumBuf, checksum)
 	s.data = append(s.data, encodedBlock...)
+	s.data = append(s.data, checkSumBuf...)
 }
 
 func (s *SsTableBuilder) EstimatedSize() int {

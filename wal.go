@@ -3,6 +3,7 @@ package mini_lsm
 import (
 	"encoding/binary"
 	"errors"
+	"github.com/Zhanghailin1995/mini-lsm/utils"
 	"github.com/huandu/skiplist"
 	"io"
 	"os"
@@ -42,18 +43,26 @@ func RecoverWal(p string, skiplist *skiplist.SkipList) (*Wal, error) {
 		if idx >= contentLen {
 			break
 		}
-		keyLen := binary.BigEndian.Uint16(content[:2])
-		content = content[2:]
+		lIdx := 0
+		keyLen := binary.BigEndian.Uint16(content[lIdx:2])
 		idx += 2
-		key := content[:keyLen]
+		lIdx += 2
+		key := content[lIdx : lIdx+int(keyLen)]
 		idx += int(keyLen)
-		content = content[keyLen:]
-		valLen := binary.BigEndian.Uint16(content[:2])
-		content = content[2:]
+		lIdx += int(keyLen)
+		valLen := binary.BigEndian.Uint16(content[lIdx : lIdx+2])
 		idx += 2
-		val := content[:valLen]
+		lIdx += 2
+		val := content[lIdx : lIdx+int(valLen)]
+		lIdx += int(valLen)
 		idx += int(valLen)
-		content = content[valLen:]
+		checksum := binary.BigEndian.Uint32(content[lIdx : lIdx+4])
+		if checksum != utils.Crc32(content[:lIdx]) {
+			return nil, errors.New("checksum error")
+		}
+		lIdx += 4
+		idx += 4
+		content = content[lIdx:]
 		skiplist.Set(Key(slices.Clone(key)), slices.Clone(val))
 	}
 	return &Wal{
@@ -64,11 +73,13 @@ func RecoverWal(p string, skiplist *skiplist.SkipList) (*Wal, error) {
 func (w *Wal) Put(k KeyType, v []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	buf := make([]byte, 2+2+len(k.Val)+len(v))
+	buf := make([]byte, 2+2+len(k.Val)+len(v)+4)
 	binary.BigEndian.PutUint16(buf[:2], uint16(len(k.Val)))
 	copy(buf[2:], k.Val)
 	binary.BigEndian.PutUint16(buf[2+len(k.Val):], uint16(len(v)))
 	copy(buf[2+len(k.Val)+2:], v)
+	checksum := utils.Crc32(buf[:len(buf)-4])
+	binary.BigEndian.PutUint32(buf[len(buf)-4:], checksum)
 	for {
 		n, err := w.file.Write(buf)
 		if errors.Is(err, io.ErrShortWrite) {

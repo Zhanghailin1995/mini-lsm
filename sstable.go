@@ -17,7 +17,7 @@ type BlockMeta struct {
 }
 
 func EncodeBlockMeta(blockMeta []*BlockMeta, buf []byte) []byte {
-	estimatedSize := 0
+	estimatedSize := 4
 	for _, bm := range blockMeta {
 		// the size of the offset
 		estimatedSize += int(unsafe.Sizeof(uint32(0)))
@@ -30,24 +30,32 @@ func EncodeBlockMeta(blockMeta []*BlockMeta, buf []byte) []byte {
 		// the size of the last key
 		estimatedSize += len(bm.lastKey.Val)
 	}
+	estimatedSize += 4
 	// ensure the buf has enough space
 	originalLen := len(buf)
 	buffer := bytes.NewBuffer(buf)
 	buffer.Grow(estimatedSize)
+	utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint32(len(blockMeta))))
 	for _, bm := range blockMeta {
-		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint32(bm.offset)))
+		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, bm.offset))
 		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint16(len(bm.firstKey.Val))))
 		buffer.Write(bm.firstKey.Val)
 		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint16(len(bm.lastKey.Val))))
 		buffer.Write(bm.lastKey.Val)
 	}
+	tmp := buffer.Bytes()
+	checksum := utils.Crc32(tmp[originalLen+4:])
+	utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, checksum))
 	utils.Assert(len(buffer.Bytes())-originalLen == estimatedSize, "encode block meta error")
 	return buffer.Bytes()
 }
 
 func DecodeBlockMeta(data []byte) []*BlockMeta {
 	var blockMeta []*BlockMeta
-	for len(data) > 0 {
+	num := binary.BigEndian.Uint32(data)
+	data = data[4:]
+	checksum := utils.Crc32(data[:len(data)-4])
+	for i := 0; i < int(num); i++ {
 		offset := binary.BigEndian.Uint32(data)
 		data = data[4:]
 		firstKeyLen := binary.BigEndian.Uint16(data)
@@ -63,6 +71,9 @@ func DecodeBlockMeta(data []byte) []*BlockMeta {
 			firstKey: KeyType{Val: firstKey},
 			lastKey:  KeyType{Val: lastKey},
 		})
+	}
+	if checksum != binary.BigEndian.Uint32(data) {
+		panic("decode block meta checksum error")
 	}
 	return blockMeta
 }
@@ -285,10 +296,15 @@ func (s *SsTable) readBlock(blockIdx uint32) (*Block, error) {
 	} else {
 		offsetEnd = s.blockMeta[blockIdx+1].offset
 	}
-	blockLen := offsetEnd - offset
-	rawBlock, err := s.file.Read(int64(offset), int(blockLen))
+	blockLen := offsetEnd - offset - 4
+	rawBlockWithChksum, err := s.file.Read(int64(offset), int(blockLen)+4)
 	if err != nil {
 		return nil, err
+	}
+	rawBlock := rawBlockWithChksum[:blockLen]
+	checksum := binary.BigEndian.Uint32(rawBlockWithChksum[blockLen:])
+	if checksum != utils.Crc32(rawBlock) {
+		panic("block checksum error")
 	}
 	return DecodeBlock(rawBlock), nil
 }
