@@ -44,7 +44,7 @@ func TestBlockBuildLarge2(t *testing.T) {
 	//println(utils.RoundUpToPowerOfTwo(10000))
 }
 
-func keyOf(i int) KeyType {
+func keyOf(i int) KeyBytes {
 	return StringKey(fmt.Sprintf("key_%03d", i*5))
 }
 

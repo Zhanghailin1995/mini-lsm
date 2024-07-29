@@ -10,7 +10,7 @@ type HeapWrapper struct {
 }
 
 func (h *HeapWrapper) Compare(other *HeapWrapper) int {
-	//res := bytes.Compare(h.iter.Key().Val, other.iter.Key().Val)
+	//res := bytes.Compare(h.iter.KeyOf().Val, other.iter.KeyOf().Val)
 	res := h.iter.Key().Compare(other.iter.Key())
 	if res == 0 {
 		if h.idx < other.idx {
@@ -30,7 +30,7 @@ type IterBinaryHeap []*HeapWrapper
 func (h IterBinaryHeap) Len() int { return len(h) }
 
 func (h IterBinaryHeap) Less(i, j int) bool {
-	//res := bytes.Compare(h[i].iter.Key().Val, h[j].iter.Key().Val)
+	//res := bytes.Compare(h[i].iter.KeyOf().Val, h[j].iter.KeyOf().Val)
 	res := h[i].iter.Key().Compare(h[j].iter.Key())
 	if res == 0 {
 		return h[i].idx < h[j].idx
@@ -97,7 +97,7 @@ func CreateMergeIterator(iters []StorageIterator) *MergeIterator {
 	}
 }
 
-func (m *MergeIterator) Key() KeyType {
+func (m *MergeIterator) Key() IteratorKey {
 	return m.current.iter.Key()
 }
 
@@ -123,13 +123,13 @@ func (m *MergeIterator) NumActiveIterators() int {
 func (m *MergeIterator) Next() error {
 	for m.iters.Len() > 0 {
 		innerIter := heap.Pop(&m.iters).(*HeapWrapper)
-		//println("1inner:", string(innerIter.iter.Key().Val), innerIter.idx)
-		//println("1curr:", string(m.current.iter.Key().Val), m.current.idx)
+		//println("1inner:", string(innerIter.iter.KeyOf().Val), innerIter.idx)
+		//println("1curr:", string(m.current.iter.KeyOf().Val), m.current.idx)
 		if innerIter.iter.Key().Compare(m.current.iter.Key()) < 0 {
 			panic("invalid key order")
 		}
 		if innerIter.iter.Key().Compare(m.current.iter.Key()) == 0 {
-			//if bytes.Compare(innerIter.iter.Key().Val, m.current.iter.Key().Val) == 0 {
+			//if bytes.Compare(innerIter.iter.KeyOf().Val, m.current.iter.KeyOf().Val) == 0 {
 			if err := innerIter.iter.Next(); err != nil {
 				return err
 			}
@@ -158,8 +158,8 @@ func (m *MergeIterator) Next() error {
 	if m.iters.Len() > 0 {
 		innerIterator := heap.Pop(&m.iters).(*HeapWrapper)
 		if innerIterator.Compare(m.current) < 0 {
-			//println("2inner:", string(innerIterator.iter.Key().Val), innerIterator.idx)
-			//println("2curr:", string(m.current.iter.Key().Val), m.current.idx)
+			//println("2inner:", string(innerIterator.iter.KeyOf().Val), innerIterator.idx)
+			//println("2curr:", string(m.current.iter.KeyOf().Val), m.current.idx)
 			m.current, innerIterator = innerIterator, m.current
 		}
 		heap.Push(&m.iters, innerIterator)

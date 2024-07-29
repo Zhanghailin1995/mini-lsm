@@ -47,8 +47,8 @@ func generateSstForW1D4(t *testing.T) (string, *SsTable) {
 
 func TestSstBuildAll(t *testing.T) {
 	_, sst := generateSstForW1D4(t)
-	assert.Equal(t, sst.FirstKey().Val, keyOf(0).Val)
-	assert.Equal(t, sst.LastKey().Val, keyOf(numOfKeys()-1).Val)
+	assert.Equal(t, sst.FirstKey().KeyRef(), keyOf(0).Val)
+	assert.Equal(t, sst.LastKey().KeyRef(), keyOf(numOfKeys()-1).Val)
 	assert.NoError(t, sst.CloseSstFile())
 }
 
@@ -58,8 +58,8 @@ func TestSstDecode(t *testing.T) {
 	newSst, err := OpenSsTableForTest(sst.file)
 	assert.NoError(t, err)
 	assert.Equal(t, newSst.blockMeta, meta)
-	assert.Equal(t, newSst.FirstKey().Val, keyOf(0).Val)
-	assert.Equal(t, newSst.LastKey().Val, keyOf(numOfKeys()-1).Val)
+	assert.Equal(t, newSst.FirstKey().KeyRef(), keyOf(0).Val)
+	assert.Equal(t, newSst.LastKey().KeyRef(), keyOf(numOfKeys()-1).Val)
 	assert.NoError(t, newSst.CloseSstFile())
 }
 
@@ -70,7 +70,7 @@ func TestSstIterator(t *testing.T) {
 	for x := 0; x < 5; x++ {
 		for i := 0; i < numOfKeys(); i++ {
 			k, v := iter.Key(), iter.Value()
-			assert.Equal(t, k.Val, keyOf(i).Val)
+			assert.Equal(t, k.KeyRef(), keyOf(i).Val)
 			assert.Equal(t, v, valueOf(i))
 			assert.NoError(t, iter.Next())
 		}
@@ -86,7 +86,7 @@ func TestSstSeekKey(t *testing.T) {
 	for offset := 1; offset <= 5; offset++ {
 		for i := 0; i < numOfKeys(); i++ {
 			k, v := iter.Key(), iter.Value()
-			assert.Equal(t, keyOf(i).Val, k.Val)
+			assert.Equal(t, keyOf(i).Val, k.KeyRef())
 			assert.Equal(t, valueOf(i), v)
 			assert.NoError(t, iter.SeekToKey(StringKey(fmt.Sprintf("key_%03d", i*5+offset))))
 		}

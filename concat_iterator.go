@@ -1,7 +1,6 @@
 package mini_lsm
 
 import (
-	"bytes"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
 )
 
@@ -47,10 +46,10 @@ func CreateSstConcatIteratorAndSeekToFirst(sstables []*SsTable) (*SstConcatItera
 	return sstconcatIter, nil
 }
 
-func CreateSstConcatIteratorAndSeekToKey(sstables []*SsTable, key KeyType) (*SstConcatIterator, error) {
+func CreateSstConcatIteratorAndSeekToKey(sstables []*SsTable, key KeyBytes) (*SstConcatIterator, error) {
 	checkSstValid(sstables)
 	idx := utils.SaturatingSub(utils.PartitionPoint(sstables, func(sst *SsTable) bool {
-		return bytes.Compare(sst.FirstKey().Val, key.Val) <= 0
+		return sst.FirstKey().Compare(key) <= 0
 	}), 1)
 
 	if idx >= len(sstables) {
@@ -96,7 +95,7 @@ func (s *SstConcatIterator) moveUntilValid() error {
 	return nil
 }
 
-func (s *SstConcatIterator) Key() KeyType {
+func (s *SstConcatIterator) Key() IteratorKey {
 	return s.current.Key()
 }
 

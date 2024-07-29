@@ -16,7 +16,7 @@ type MemTable struct {
 }
 
 var CompareKeyFunc = skiplist.GreaterThanFunc(func(a, b interface{}) int {
-	return a.(KeyType).Compare(b.(KeyType))
+	return a.(KeyBytes).KeyRefCompare(b.(KeyBytes))
 })
 
 func CreateMemTable(id uint32) *MemTable {
@@ -64,10 +64,10 @@ func (m *MemTable) Close() error {
 	return nil
 }
 
-func (m *MemTable) Put(key KeyType, value []byte) error {
+func (m *MemTable) Put(key KeyBytes, value []byte) error {
 	estimatedSize := uint32(len(key.Val) + len(value))
 	m.rwLock.Lock()
-	m.skipMap.Set(key.Clone(), utils.Copy(value))
+	m.skipMap.Set(KeyFromBytesWithTs(key.KeyRef(), TsDefault), utils.Copy(value))
 	m.rwLock.Unlock()
 	atomic.AddUint32(&m.approximateSize, estimatedSize)
 	if m.wal != nil {
@@ -79,7 +79,7 @@ func (m *MemTable) Put(key KeyType, value []byte) error {
 	return nil
 }
 
-func (m *MemTable) Get(key KeyType) []byte {
+func (m *MemTable) Get(key KeyBytes) []byte {
 	m.rwLock.RLock()
 	defer m.rwLock.RUnlock()
 	v, ok := m.skipMap.GetValue(key)
@@ -107,7 +107,7 @@ func (m *MemTable) Flush(builder *SsTableBuilder) error {
 	defer m.rwLock.RUnlock()
 	iter := m.skipMap.Front()
 	for iter != nil {
-		builder.Add(iter.Key().(KeyType), iter.Value.([]byte))
+		builder.Add(KeyFromBytesWithTs(iter.Key().(KeyBytes).KeyRef(), TsDefault), iter.Value.([]byte))
 		iter = iter.Next()
 	}
 	return nil
@@ -117,11 +117,11 @@ func (m *MemTable) ApproximateSize() uint32 {
 	return atomic.LoadUint32(&m.approximateSize)
 }
 
-func (m *MemTable) ForTestingPutSlice(key KeyType, value []byte) error {
+func (m *MemTable) ForTestingPutSlice(key KeyBytes, value []byte) error {
 	return m.Put(key, value)
 }
 
-func (m *MemTable) ForTestingGetSlice(key KeyType) []byte {
+func (m *MemTable) ForTestingGetSlice(key KeyBytes) []byte {
 	return m.Get(key)
 }
 
@@ -129,77 +129,21 @@ func (m *MemTable) IsEmpty() bool {
 	return m.skipMap.Len() == 0
 }
 
-type BoundType uint8
-
-const (
-	Unbounded BoundType = iota
-	Included
-	Excluded
-)
-
-type KeyBound struct {
-	Val  KeyType
-	Type BoundType
-}
-
-type BytesBound struct {
-	Val  []byte
-	Type BoundType
-}
-
-func BytesBounded(val []byte, boundType BoundType) BytesBound {
-	return BytesBound{Val: val, Type: boundType}
-}
-
-func MapBound(bound BytesBound) KeyBound {
-	return KeyBound{Val: Key(bound.Val), Type: bound.Type}
-}
-
-func IncludeBytes(val []byte) BytesBound {
-	return BytesBounded(val, Included)
-}
-
-func ExcludeBytes(val []byte) BytesBound {
-	return BytesBounded(val, Excluded)
-}
-
-func UnboundBytes() BytesBound {
-	return BytesBounded(nil, Unbounded)
-}
-
-func Bounded(val KeyType, boundType BoundType) KeyBound {
-	return KeyBound{Val: val, Type: boundType}
-}
-
-func Include(val KeyType) KeyBound {
-	return Bounded(val, Included)
-}
-
-func Exclude(val KeyType) KeyBound {
-	return Bounded(val, Excluded)
-}
-
-func Unbound() KeyBound {
-	return Bounded(KeyType{
-		Val: nil,
-	}, Unbounded)
-}
-
 type MemTableIterator struct {
 	ele          *skiplist.Element
 	upper        KeyBound
-	currentKey   KeyType
+	currentKey   KeyBytes
 	currentValue []byte
 }
 
 func newMemTableIterator(ele *skiplist.Element, upper KeyBound) *MemTableIterator {
-	var k KeyType
+	var k KeyBytes
 	var v []byte
 	if ele != nil {
-		k = Key(utils.Copy(ele.Key().(KeyType).Val))
+		k = KeyOf(utils.Copy(ele.Key().(KeyBytes).Val))
 		v = utils.Copy(ele.Value.([]byte))
 	} else {
-		k = KeyType{Val: []byte{}}
+		k = KeyBytes{Val: []byte{}}
 		v = nil
 	}
 	m := &MemTableIterator{
@@ -220,7 +164,7 @@ func CreateMemTableIterator(list *skiplist.SkipList, lower, upper KeyBound) *Mem
 		return newMemTableIterator(list.Find(lower.Val), upper)
 	} else {
 		ele := list.Find(lower.Val)
-		if ele != nil && ele.Key().(KeyType).Compare(lower.Val) == 0 {
+		if ele != nil && ele.Key().(KeyBytes).Compare(lower.Val) == 0 {
 			ele = ele.Next()
 		}
 		return newMemTableIterator(ele, upper)
@@ -232,9 +176,9 @@ func (m *MemTableIterator) Value() []byte {
 	return v
 }
 
-func (m *MemTableIterator) Key() KeyType {
+func (m *MemTableIterator) Key() IteratorKey {
 	k := m.currentKey
-	return k
+	return KeyFromBytesWithTs(k.Val, TsDefault)
 }
 
 func (m *MemTableIterator) IsValid() bool {
@@ -248,8 +192,8 @@ func (m *MemTableIterator) Next() error {
 			m.currentKey, m.currentValue = entryToKeyAndValue(m.ele)
 			return nil
 		}
-		//compare := bytes.Compare(m.ele.Key().(KeyType).Val, m.upper.Val.Val)
-		compare := m.ele.Key().(KeyType).Compare(m.upper.Val)
+		//compare := bytes.Compare(m.ele.KeyOf().(KeyBytes).Val, m.upper.Val.Val)
+		compare := m.ele.Key().(KeyBytes).Compare(m.upper.Val)
 		if m.upper.Type == Excluded && compare == 0 {
 			m.ele = nil
 		} else if compare == 1 {
@@ -260,11 +204,11 @@ func (m *MemTableIterator) Next() error {
 	return nil
 }
 
-func entryToKeyAndValue(entry *skiplist.Element) (KeyType, []byte) {
+func entryToKeyAndValue(entry *skiplist.Element) (KeyBytes, []byte) {
 	if entry == nil {
-		return KeyType{Val: []byte{}}, nil
+		return KeyBytes{Val: []byte{}}, nil
 	} else {
-		return Key(utils.Copy(entry.Key().(KeyType).Val)), utils.Copy(entry.Value.([]byte))
+		return KeyOf(utils.Copy(entry.Key().(KeyBytes).Val)), utils.Copy(entry.Value.([]byte))
 	}
 }
 

@@ -128,10 +128,10 @@ func (lsm *LsmStorageInner) compactGenerateSstFromIter(iter StorageIterator, com
 		}
 		if compactToBottomLevel {
 			if len(iter.Value()) > 0 {
-				builder.Add(iter.Key(), iter.Value())
+				builder.Add(iter.Key().(KeyBytes), iter.Value())
 			}
 		} else {
-			builder.Add(iter.Key(), iter.Value())
+			builder.Add(iter.Key().(KeyBytes), iter.Value())
 		}
 		err := iter.Next()
 		if err != nil {

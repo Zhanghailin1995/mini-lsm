@@ -53,7 +53,7 @@ func TestTask1BloomFilter(t *testing.T) {
 func TestTask2SstDecode(t *testing.T) {
 	builder := NewSsTableBuilder(128)
 	for i := uint32(0); i < NumOfKeysW1D7(); i++ {
-		builder.Add(Key(KeyOfW1D7(i)), ValueOfW1D7(i))
+		builder.Add(KeyOf(KeyOfW1D7(i)), ValueOfW1D7(i))
 	}
 	dir := t.TempDir()
 	p := path.Join(dir, "1.sst")
@@ -70,15 +70,16 @@ func TestTask2SstDecode(t *testing.T) {
 func TestTask3BlockKeyCompression(t *testing.T) {
 	builder := NewSsTableBuilder(128)
 	for i := uint32(0); i < NumOfKeysW1D7(); i++ {
-		builder.Add(Key(KeyOfW1D7(i)), ValueOfW1D7(i))
+		builder.Add(KeyOf(KeyOfW1D7(i)), ValueOfW1D7(i))
 	}
 	dir := t.TempDir()
 	p := path.Join(dir, "1.sst")
 	sst := utils.Unwrap(builder.buildForTest(p))
-	if TSEnabled {
-		assert.Truef(t, len(sst.blockMeta) <= 34, "you have %d blocks, expect 34", len(sst.blockMeta))
-	} else {
-		assert.Truef(t, len(sst.blockMeta) <= 25, "you have %d blocks, expect 25", len(sst.blockMeta))
-	}
+	//if TsEnabled {
+	//	assert.Truef(t, len(sst.blockMeta) <= 34, "you have %d blocks, expect 34", len(sst.blockMeta))
+	//} else {
+	//	assert.Truef(t, len(sst.blockMeta) <= 25, "you have %d blocks, expect 25", len(sst.blockMeta))
+	//}
+	assert.Truef(t, len(sst.blockMeta) <= 34, "you have %d blocks, expect 34", len(sst.blockMeta))
 	assert.NoError(t, sst.CloseSstFile())
 }

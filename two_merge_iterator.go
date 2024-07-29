@@ -36,7 +36,7 @@ func CreateTwoMergeIterator(a, b StorageIterator) (*TwoMergeIterator, error) {
 	return iter, nil
 }
 
-func (t *TwoMergeIterator) Key() KeyType {
+func (t *TwoMergeIterator) Key() IteratorKey {
 	if t.chooseA {
 		return t.a.Key()
 	}

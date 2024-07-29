@@ -18,7 +18,7 @@ var (
 
 type MockIterator struct {
 	Data []struct {
-		K KeyType
+		K KeyBytes
 		V []byte
 	}
 	ErrorWhen int32
@@ -27,14 +27,14 @@ type MockIterator struct {
 
 func (m *MockIterator) Clone() *MockIterator {
 	d := make([]struct {
-		K KeyType
+		K KeyBytes
 		V []byte
 	}, len(m.Data))
 	for i, v := range m.Data {
 		d[i] = struct {
-			K KeyType
+			K KeyBytes
 			V []byte
-		}{K: Key(utils.Copy(v.K.Val)), V: utils.Copy(v.V)}
+		}{K: KeyOf(utils.Copy(v.K.Val)), V: utils.Copy(v.V)}
 	}
 	return &MockIterator{
 		Data:      d,
@@ -44,7 +44,7 @@ func (m *MockIterator) Clone() *MockIterator {
 }
 
 func NewMockIterator(data []struct {
-	K KeyType
+	K KeyBytes
 	V []byte
 }) *MockIterator {
 	return &MockIterator{Data: data, ErrorWhen: -1, Index: 0}
@@ -52,15 +52,15 @@ func NewMockIterator(data []struct {
 
 func NewMockIteratorWithKVPair(data []KeyValuePair) *MockIterator {
 	d := make([]struct {
-		K KeyType
+		K KeyBytes
 		V []byte
 	}, len(data))
 	for i, v := range data {
 		d[i] = struct {
-			K KeyType
+			K KeyBytes
 			V []byte
 		}{
-			K: Key(v[0]),
+			K: KeyOf(v[0]),
 			V: utils.Copy(v[1]),
 		}
 	}
@@ -69,12 +69,12 @@ func NewMockIteratorWithKVPair(data []KeyValuePair) *MockIterator {
 
 func NewMockIteratorWithStringKVPair(data []StringKeyValuePair) *MockIterator {
 	d := make([]struct {
-		K KeyType
+		K KeyBytes
 		V []byte
 	}, len(data))
 	for i, v := range data {
 		d[i] = struct {
-			K KeyType
+			K KeyBytes
 			V []byte
 		}{
 			K: StringKey(v[0]),
@@ -85,7 +85,7 @@ func NewMockIteratorWithStringKVPair(data []StringKeyValuePair) *MockIterator {
 }
 
 func NewMockIteratorWithError(data []struct {
-	K KeyType
+	K KeyBytes
 	V []byte
 }, errorWhen int32) *MockIterator {
 	return &MockIterator{Data: data, ErrorWhen: errorWhen, Index: 0}
@@ -101,7 +101,7 @@ func (m *MockIterator) Next() error {
 	return nil
 }
 
-func (m *MockIterator) Key() KeyType {
+func (m *MockIterator) Key() IteratorKey {
 	if m.Index >= uint32(len(m.Data)) && m.ErrorWhen != -1 {
 		panic("invalid access after next returns an error!")
 	}
@@ -131,8 +131,8 @@ func CheckIterResultByKey1(t *testing.T, iter StorageIterator, expected []String
 		if !iter.IsValid() {
 			t.Errorf("expected valid iterator, got invalid")
 		}
-		if bytes.Compare([]byte(expected[i][0]), iter.Key().Val) != 0 {
-			t.Errorf("expected key %s, got %s", expected[i][0], string(iter.Key().Val))
+		if bytes.Compare([]byte(expected[i][0]), iter.Key().KeyRef()) != 0 {
+			t.Errorf("expected key %s, got %s", expected[i][0], string(iter.Key().KeyRef()))
 		}
 		if expected[i][1] != string(iter.Value()) {
 			t.Errorf("expected value %s, got %s", expected[i][1], string(iter.Value()))
@@ -147,15 +147,15 @@ func CheckIterResultByKey1(t *testing.T, iter StorageIterator, expected []String
 }
 
 func CheckIterResultByKey(t *testing.T, iter StorageIterator, expected []struct {
-	K KeyType
+	K KeyBytes
 	V []byte
 }) {
 	for i := range expected {
 		if !iter.IsValid() {
 			t.Errorf("expected valid iterator, got invalid")
 		}
-		if bytes.Compare(expected[i].K.Val, iter.Key().Val) != 0 {
-			t.Errorf("expected key %s, got %s", string(expected[i].K.Val), string(iter.Key().Val))
+		if bytes.Compare(expected[i].K.Val, iter.Key().KeyRef()) != 0 {
+			t.Errorf("expected key %s, got %s", string(expected[i].K.Val), string(iter.Key().KeyRef()))
 		}
 		if string(expected[i].V) != string(iter.Value()) {
 			t.Errorf("expected value %s, got %s", string(expected[i].V), string(iter.Value()))
@@ -170,15 +170,15 @@ func CheckIterResultByKey(t *testing.T, iter StorageIterator, expected []struct 
 }
 
 func CheckLsmIterResultByKey(t *testing.T, iter StorageIterator, expected []struct {
-	K KeyType
+	K KeyBytes
 	V []byte
 }) {
 	for i := range expected {
 		if !iter.IsValid() {
 			t.Errorf("expected valid iterator, got invalid")
 		}
-		if bytes.Compare(expected[i].K.Val, iter.Key().Val) != 0 {
-			t.Errorf("expected key %s, got %s", string(expected[i].K.Val), string(iter.Key().Val))
+		if bytes.Compare(expected[i].K.Val, iter.Key().KeyRef()) != 0 {
+			t.Errorf("expected key %s, got %s", string(expected[i].K.Val), string(iter.Key().KeyRef()))
 		}
 		if string(expected[i].V) != string(iter.Value()) {
 			t.Errorf("expected value %s, got %s", string(expected[i].V), string(iter.Value()))
@@ -197,12 +197,13 @@ func CheckLsmIterResultByKey1(t *testing.T, iter StorageIterator, expected []Str
 		if !iter.IsValid() {
 			t.Errorf("expected valid iterator, got invalid")
 		}
-		if iter.Key().Compare(StringKey(expected[i][0])) != 0 {
-			t.Errorf("expected key %s, got %s", expected[i][0], string(iter.Key().Val))
+		if iter.Key().KeyRefCompare(StringKey(expected[i][0])) != 0 {
+			t.Errorf("expected key %s, got %s", expected[i][0], string(iter.Key().KeyRef()))
 		}
 		if expected[i][1] != string(iter.Value()) {
 			t.Errorf("expected key %s : value %s, got %s", expected[i][0], expected[i][1], string(iter.Value()))
 		}
+		//println(string(iter.Key().KeyRef()), string(iter.Value()))
 		if err := iter.Next(); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -250,7 +251,7 @@ func CompactionBench(lsm *MiniLsm, t *testing.T) {
 	}
 	maxKey := uint32(0)
 	overlaps := uint32(20000)
-	if TSEnabled {
+	if TsEnabled {
 		overlaps = uint32(10000)
 	}
 	for iter := uint32(0); iter < 10; iter++ {
@@ -331,4 +332,35 @@ func dumpFilesInDir(path string) {
 
 func b(s string) []byte {
 	return []byte(s)
+}
+
+func GenerateSstWithTs(id uint32, p string, data []*Tuple[*Tuple[[]byte, uint64], []byte], blockCache *BlockCache) *SsTable {
+	builder := NewSsTableBuilder(128)
+	for _, kv := range data {
+		builder.Add(KeyFromBytesWithTs(kv.First.First, kv.First.Second), kv.Second)
+	}
+	return utils.Unwrap(builder.Build(id, blockCache, p))
+}
+
+func CheckIterResultByKeyAndTs(t *testing.T, iter StorageIterator, expected []*Tuple[*Tuple[[]byte, uint64], []byte]) {
+	for i := range expected {
+		if !iter.IsValid() {
+			t.Errorf("expected valid iterator, got invalid")
+		}
+		if bytes.Compare(expected[i].First.First, iter.Key().KeyRef()) != 0 {
+			t.Errorf("expected key %s, got %s", string(expected[i].First.First), string(iter.Key().KeyRef()))
+		}
+		if expected[i].First.Second != iter.Key().(KeyBytes).Ts {
+			t.Errorf("expected ts %d, got %d", expected[i].First.Second, iter.Key().(KeyBytes).Ts)
+		}
+		if string(expected[i].Second) != string(iter.Value()) {
+			t.Errorf("expected value %s, got %s", string(expected[i].Second), string(iter.Value()))
+		}
+		if err := iter.Next(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if iter.IsValid() {
+		t.Errorf("expected invalid iterator, got valid")
+	}
 }

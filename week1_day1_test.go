@@ -7,52 +7,52 @@ import (
 
 func TestTask1MemTableGet(t *testing.T) {
 	memTable := CreateMemTable(0)
-	err := memTable.ForTestingPutSlice(Key([]byte("key1")), []byte("value1"))
+	err := memTable.ForTestingPutSlice(KeyOf([]byte("key1")), []byte("value1"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(Key([]byte("key2")), []byte("value2"))
+	err = memTable.ForTestingPutSlice(KeyOf([]byte("key2")), []byte("value2"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(Key([]byte("key3")), []byte("value3"))
+	err = memTable.ForTestingPutSlice(KeyOf([]byte("key3")), []byte("value3"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	assert.Equalf(t, memTable.ForTestingGetSlice(Key([]byte("key1"))), []byte("value1"), "Expected value1, got %s", memTable.ForTestingGetSlice(Key([]byte("key1"))))
-	assert.Equalf(t, memTable.ForTestingGetSlice(Key([]byte("key2"))), []byte("value2"), "Expected value2, got %s", memTable.ForTestingGetSlice(Key([]byte("key2"))))
-	assert.Equalf(t, memTable.ForTestingGetSlice(Key([]byte("key3"))), []byte("value3"), "Expected value3, got %s", memTable.ForTestingGetSlice(Key([]byte("key3"))))
+	assert.Equalf(t, memTable.ForTestingGetSlice(KeyOf([]byte("key1"))), []byte("value1"), "Expected value1, got %s", memTable.ForTestingGetSlice(KeyOf([]byte("key1"))))
+	assert.Equalf(t, memTable.ForTestingGetSlice(KeyOf([]byte("key2"))), []byte("value2"), "Expected value2, got %s", memTable.ForTestingGetSlice(KeyOf([]byte("key2"))))
+	assert.Equalf(t, memTable.ForTestingGetSlice(KeyOf([]byte("key3"))), []byte("value3"), "Expected value3, got %s", memTable.ForTestingGetSlice(KeyOf([]byte("key3"))))
 }
 
 func TestTask1MemTableOverwrite(t *testing.T) {
 	memTable := CreateMemTable(0)
-	err := memTable.ForTestingPutSlice(Key([]byte("key1")), []byte("value1"))
+	err := memTable.ForTestingPutSlice(KeyOf([]byte("key1")), []byte("value1"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(Key([]byte("key2")), []byte("value2"))
+	err = memTable.ForTestingPutSlice(KeyOf([]byte("key2")), []byte("value2"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(Key([]byte("key3")), []byte("value3"))
+	err = memTable.ForTestingPutSlice(KeyOf([]byte("key3")), []byte("value3"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(Key([]byte("key1")), []byte("value11"))
+	err = memTable.ForTestingPutSlice(KeyOf([]byte("key1")), []byte("value11"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(Key([]byte("key2")), []byte("value22"))
+	err = memTable.ForTestingPutSlice(KeyOf([]byte("key2")), []byte("value22"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(Key([]byte("key3")), []byte("value33"))
+	err = memTable.ForTestingPutSlice(KeyOf([]byte("key3")), []byte("value33"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	assert.Equal(t, memTable.ForTestingGetSlice(Key([]byte("key1"))), []byte("value11"))
-	assert.Equal(t, memTable.ForTestingGetSlice(Key([]byte("key2"))), []byte("value22"))
-	assert.Equal(t, memTable.ForTestingGetSlice(Key([]byte("key3"))), []byte("value33"))
+	assert.Equal(t, memTable.ForTestingGetSlice(KeyOf([]byte("key1"))), []byte("value11"))
+	assert.Equal(t, memTable.ForTestingGetSlice(KeyOf([]byte("key2"))), []byte("value22"))
+	assert.Equal(t, memTable.ForTestingGetSlice(KeyOf([]byte("key3"))), []byte("value33"))
 }
 
 func TestTask2StorageIntegration(t *testing.T) {
@@ -61,26 +61,26 @@ func TestTask2StorageIntegration(t *testing.T) {
 	if err != nil {
 		t.Errorf("OpenLsmStorageInner error: %v", err)
 	}
-	v, err := storage.Get(Key([]byte("0")))
+	v, err := storage.Get([]byte("0"))
 	assert.True(t, err == nil && v == nil)
-	err = storage.Put(Key([]byte("1")), []byte("233"))
+	err = storage.Put([]byte("1"), []byte("233"))
 	assert.True(t, err == nil)
-	err = storage.Put(Key([]byte("2")), []byte("2333"))
+	err = storage.Put([]byte("2"), []byte("2333"))
 	assert.True(t, err == nil)
-	err = storage.Put(Key([]byte("3")), []byte("23333"))
+	err = storage.Put([]byte("3"), []byte("23333"))
 	assert.True(t, err == nil)
-	v, err = storage.Get(Key([]byte("1")))
+	v, err = storage.Get([]byte("1"))
 	assert.True(t, err == nil)
 	assert.Equal(t, v, []byte("233"))
-	v, err = storage.Get(Key([]byte("2")))
+	v, err = storage.Get([]byte("2"))
 	assert.True(t, err == nil)
 	assert.Equal(t, v, []byte("2333"))
-	v, err = storage.Get(Key([]byte("3")))
+	v, err = storage.Get([]byte("3"))
 	assert.True(t, err == nil)
 	assert.Equal(t, v, []byte("23333"))
-	err = storage.Delete(Key([]byte("2")))
+	err = storage.Delete([]byte("2"))
 	assert.True(t, err == nil)
-	v, err = storage.Get(Key([]byte("2")))
+	v, err = storage.Get([]byte("2"))
 	assert.True(t, err == nil && v == nil)
 	assert.NoError(t, storage.Close())
 }
@@ -92,17 +92,17 @@ func TestTask3StorageIntegration(t *testing.T) {
 		t.Errorf("OpenLsmStorageInner error: %v", err)
 	}
 
-	err = storage.Put(Key([]byte("1")), []byte("233"))
+	err = storage.Put([]byte("1"), []byte("233"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
 
-	err = storage.Put(Key([]byte("2")), []byte("2333"))
+	err = storage.Put([]byte("2"), []byte("2333"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
 
-	err = storage.Put(Key([]byte("3")), []byte("23333"))
+	err = storage.Put([]byte("3"), []byte("23333"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
@@ -125,17 +125,17 @@ func TestTask3StorageIntegration(t *testing.T) {
 		t.Errorf("Expected >= 15, got %d", previousApproximateSize)
 	}
 
-	err = storage.Put(Key([]byte("1")), []byte("2333"))
+	err = storage.Put([]byte("1"), []byte("2333"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
 
-	err = storage.Put(Key([]byte("2")), []byte("23333"))
+	err = storage.Put([]byte("2"), []byte("23333"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
 
-	err = storage.Put(Key([]byte("3")), []byte("233333"))
+	err = storage.Put([]byte("3"), []byte("233333"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestTask3FreezeOnCapacity(t *testing.T) {
 		t.Errorf("OpenLsmStorageInner error: %v", err)
 	}
 	for i := 0; i < 1000; i++ {
-		err = storage.Put(Key([]byte("1")), []byte("2333"))
+		err = storage.Put([]byte("1"), []byte("2333"))
 		if err != nil {
 			t.Errorf("Put error: %v", err)
 		}
@@ -187,7 +187,7 @@ func TestTask3FreezeOnCapacity(t *testing.T) {
 		t.Errorf("Expected >= 1, got %d", numImmMemTables)
 	}
 	for i := 0; i < 1000; i++ {
-		err := storage.Delete(Key([]byte("1")))
+		err := storage.Delete([]byte("1"))
 		if err != nil {
 			t.Errorf("Delete error: %v", err)
 		}
@@ -206,13 +206,13 @@ func TestTask4StorageIntegration(t *testing.T) {
 	if err != nil {
 		t.Errorf("OpenLsmStorageInner error: %v", err)
 	}
-	v, err := storage.Get(Key([]byte("0")))
+	v, err := storage.Get([]byte("0"))
 	assert.True(t, err == nil && v == nil)
-	err = storage.Put(Key([]byte("1")), []byte("233"))
+	err = storage.Put([]byte("1"), []byte("233"))
 	assert.True(t, err == nil)
-	err = storage.Put(Key([]byte("2")), []byte("2333"))
+	err = storage.Put([]byte("2"), []byte("2333"))
 	assert.True(t, err == nil)
-	err = storage.Put(Key([]byte("3")), []byte("23333"))
+	err = storage.Put([]byte("3"), []byte("23333"))
 	assert.True(t, err == nil)
 	storage.stateLock.Lock()
 	err = storage.ForceFreezeMemTable()
@@ -220,30 +220,30 @@ func TestTask4StorageIntegration(t *testing.T) {
 	if err != nil {
 		t.Errorf("ForceFreezeMemTable error: %v", err)
 	}
-	err = storage.Delete(Key([]byte("1")))
+	err = storage.Delete([]byte("1"))
 	assert.True(t, err == nil)
-	err = storage.Delete(Key([]byte("2")))
+	err = storage.Delete([]byte("2"))
 	assert.True(t, err == nil)
-	err = storage.Put(Key([]byte("3")), []byte("2333"))
+	err = storage.Put([]byte("3"), []byte("2333"))
 	assert.True(t, err == nil)
-	assert.NoError(t, storage.Put(Key([]byte("4")), []byte("23333")))
+	assert.NoError(t, storage.Put([]byte("4"), []byte("23333")))
 	storage.stateLock.Lock()
 	assert.NoError(t, storage.ForceFreezeMemTable())
 	storage.stateLock.Unlock()
-	assert.NoError(t, storage.Put(Key([]byte("1")), []byte("233333")))
-	assert.NoError(t, storage.Put(Key([]byte("3")), []byte("2333333")))
+	assert.NoError(t, storage.Put([]byte("1"), []byte("233333")))
+	assert.NoError(t, storage.Put([]byte("3"), []byte("2333333")))
 	storage.rwLock.RLock()
 	assert.Equal(t, len(storage.state.immMemTable), 2)
 	storage.rwLock.RUnlock()
-	v, err = storage.Get(Key([]byte("1")))
+	v, err = storage.Get([]byte("1"))
 	assert.True(t, err == nil)
 	assert.Equal(t, v, []byte("233333"))
-	v, err = storage.Get(Key([]byte("2")))
+	v, err = storage.Get([]byte("2"))
 	assert.True(t, err == nil && v == nil)
-	v, err = storage.Get(Key([]byte("3")))
+	v, err = storage.Get([]byte("3"))
 	assert.True(t, err == nil)
 	assert.Equal(t, v, []byte("2333333"))
-	v, err = storage.Get(Key([]byte("4")))
+	v, err = storage.Get([]byte("4"))
 	assert.True(t, err == nil)
 	assert.Equal(t, v, []byte("23333"))
 	assert.NoError(t, storage.Close())

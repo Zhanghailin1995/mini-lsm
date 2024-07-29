@@ -112,14 +112,14 @@ func TestTask1Merge5(t *testing.T) {
 func TestTask2StorageScan(t *testing.T) {
 	dir := t.TempDir()
 	storage := utils.Unwrap(OpenLsmStorageInner(dir, DefaultForWeek1Test()))
-	assert.NoError(t, storage.Put(StringKey("1"), []byte("233")))
-	assert.NoError(t, storage.Put(StringKey("2"), []byte("2333")))
-	assert.NoError(t, storage.Put(StringKey("00"), []byte("2333")))
+	assert.NoError(t, storage.Put([]byte("1"), []byte("233")))
+	assert.NoError(t, storage.Put([]byte("2"), []byte("2333")))
+	assert.NoError(t, storage.Put([]byte("00"), []byte("2333")))
 	storage.stateLock.Lock()
 	assert.NoError(t, storage.ForceFreezeMemTable())
 	storage.stateLock.Unlock()
-	assert.NoError(t, storage.Put(StringKey("3"), []byte("23333")))
-	assert.NoError(t, storage.Delete(StringKey("1")))
+	assert.NoError(t, storage.Put([]byte("3"), []byte("23333")))
+	assert.NoError(t, storage.Delete([]byte("1")))
 
 	sst1 := GenerateSst(10,
 		path.Join(dir, "10.sst"),
@@ -148,24 +148,24 @@ func TestTask2StorageScan(t *testing.T) {
 		storage.rwLock.Unlock()
 	}
 
-	CheckLsmIterResultByKey1(t, utils.Unwrap(storage.Scan(Unbound(), Unbound())), []StringKeyValuePair{
+	CheckLsmIterResultByKey1(t, utils.Unwrap(storage.Scan(UnboundBytes(), UnboundBytes())), []StringKeyValuePair{
 		{"0", "2333333"},
 		{"00", "2333"},
 		{"2", "2333"},
 		{"3", "23333"},
 	})
 
-	CheckLsmIterResultByKey1(t, utils.Unwrap(storage.Scan(Include(StringKey("1")), Include(StringKey("2")))), []StringKeyValuePair{
+	CheckLsmIterResultByKey1(t, utils.Unwrap(storage.Scan(IncludeBytes([]byte("1")), IncludeBytes([]byte("2")))), []StringKeyValuePair{
 		{"2", "2333"},
 	})
-	CheckLsmIterResultByKey1(t, utils.Unwrap(storage.Scan(Exclude(StringKey("1")), Exclude(StringKey("3")))), []StringKeyValuePair{
+	CheckLsmIterResultByKey1(t, utils.Unwrap(storage.Scan(ExcludeBytes([]byte("1")), ExcludeBytes([]byte("3")))), []StringKeyValuePair{
 		{"2", "2333"},
 	})
-	CheckLsmIterResultByKey1(t, utils.Unwrap(storage.Scan(Include(StringKey("0")), Include(StringKey("1")))), []StringKeyValuePair{
+	CheckLsmIterResultByKey1(t, utils.Unwrap(storage.Scan(IncludeBytes([]byte("0")), IncludeBytes([]byte("1")))), []StringKeyValuePair{
 		{"0", "2333333"},
 		{"00", "2333"},
 	})
-	CheckLsmIterResultByKey1(t, utils.Unwrap(storage.Scan(Exclude(StringKey("0")), Include(StringKey("1")))), []StringKeyValuePair{
+	CheckLsmIterResultByKey1(t, utils.Unwrap(storage.Scan(ExcludeBytes([]byte("0")), IncludeBytes([]byte("1")))), []StringKeyValuePair{
 		{"00", "2333"},
 	})
 
@@ -175,14 +175,14 @@ func TestTask2StorageScan(t *testing.T) {
 func TestTask2StorageGet(t *testing.T) {
 	dir := t.TempDir()
 	storage := utils.Unwrap(OpenLsmStorageInner(dir, DefaultForWeek1Test()))
-	assert.NoError(t, storage.Put(StringKey("1"), []byte("233")))
-	assert.NoError(t, storage.Put(StringKey("2"), []byte("2333")))
-	assert.NoError(t, storage.Put(StringKey("00"), []byte("2333")))
+	assert.NoError(t, storage.Put([]byte("1"), []byte("233")))
+	assert.NoError(t, storage.Put([]byte("2"), []byte("2333")))
+	assert.NoError(t, storage.Put([]byte("00"), []byte("2333")))
 	storage.stateLock.Lock()
 	assert.NoError(t, storage.ForceFreezeMemTable())
 	storage.stateLock.Unlock()
-	assert.NoError(t, storage.Put(StringKey("3"), []byte("23333")))
-	assert.NoError(t, storage.Delete(StringKey("1")))
+	assert.NoError(t, storage.Put([]byte("3"), []byte("23333")))
+	assert.NoError(t, storage.Delete([]byte("1")))
 
 	sst1 := GenerateSst(10,
 		path.Join(dir, "10.sst"),
@@ -211,14 +211,14 @@ func TestTask2StorageGet(t *testing.T) {
 		storage.rwLock.Unlock()
 	}
 
-	assert.Equal(t, utils.Unwrap(storage.Get(StringKey("0"))), []byte("2333333"))
-	assert.Equal(t, utils.Unwrap(storage.Get(StringKey("00"))), []byte("2333"))
-	assert.Equal(t, utils.Unwrap(storage.Get(StringKey("2"))), []byte("2333"))
-	assert.Equal(t, utils.Unwrap(storage.Get(StringKey("3"))), []byte("23333"))
+	assert.Equal(t, utils.Unwrap(storage.Get([]byte("0"))), []byte("2333333"))
+	assert.Equal(t, utils.Unwrap(storage.Get([]byte("00"))), []byte("2333"))
+	assert.Equal(t, utils.Unwrap(storage.Get([]byte("2"))), []byte("2333"))
+	assert.Equal(t, utils.Unwrap(storage.Get([]byte("3"))), []byte("23333"))
 
-	assert.Equal(t, utils.Unwrap(storage.Get(StringKey("4"))), []byte(nil))
-	assert.Equal(t, utils.Unwrap(storage.Get(StringKey("--"))), []byte(nil))
-	assert.Equal(t, utils.Unwrap(storage.Get(StringKey("555"))), []byte(nil))
+	assert.Equal(t, utils.Unwrap(storage.Get([]byte("4"))), []byte(nil))
+	assert.Equal(t, utils.Unwrap(storage.Get([]byte("--"))), []byte(nil))
+	assert.Equal(t, utils.Unwrap(storage.Get([]byte("555"))), []byte(nil))
 
 	assert.NoError(t, storage.Close())
 }

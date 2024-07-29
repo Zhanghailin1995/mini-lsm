@@ -131,7 +131,7 @@ func main() {
 			cnt := 0
 			for iter.IsValid() {
 				cnt++
-				fmt.Printf("%s=%s\r\n", string(iter.Key().Val), string(iter.Value()))
+				fmt.Printf("%s=%s\r\n", string(iter.Key().KeyRef()), string(iter.Value()))
 				utils.UnwrapError(iter.Next())
 			}
 			fmt.Printf("%d keys scanned\r\n", cnt)

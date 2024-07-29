@@ -11,14 +11,14 @@ import (
 func TestTask1FullCompaction(t *testing.T) {
 	dir := t.TempDir()
 	storage := utils.Unwrap(OpenLsmStorageInner(dir, DefaultForWeek1Test()))
-	assert.NoError(t, storage.Put(StringKey("0"), []byte("v1")))
+	assert.NoError(t, storage.Put([]byte("0"), []byte("v1")))
 	Sync(storage)
-	assert.NoError(t, storage.Put(StringKey("0"), []byte("v2")))
-	assert.NoError(t, storage.Put(StringKey("1"), []byte("v2")))
-	assert.NoError(t, storage.Put(StringKey("2"), []byte("v2")))
+	assert.NoError(t, storage.Put([]byte("0"), []byte("v2")))
+	assert.NoError(t, storage.Put([]byte("1"), []byte("v2")))
+	assert.NoError(t, storage.Put([]byte("2"), []byte("v2")))
 	Sync(storage)
-	assert.NoError(t, storage.Delete(StringKey("0")))
-	assert.NoError(t, storage.Delete(StringKey("2")))
+	assert.NoError(t, storage.Delete([]byte("0")))
+	assert.NoError(t, storage.Delete([]byte("2")))
 	Sync(storage)
 
 	assert.Equal(t, 3, ReadLsmStorageState(storage, func(state *LsmStorageState) int {
@@ -29,7 +29,7 @@ func TestTask1FullCompaction(t *testing.T) {
 		return ConstructMergeIteratorOverStorage(state)
 	})
 
-	if TSEnabled {
+	if TsEnabled {
 		CheckIterResultByKey1(t, iter, []StringKeyValuePair{
 			{"0", ""},
 			{"0", "v2"},
@@ -56,7 +56,7 @@ func TestTask1FullCompaction(t *testing.T) {
 		return ConstructMergeIteratorOverStorage(state)
 	})
 
-	if TSEnabled {
+	if TsEnabled {
 		CheckIterResultByKey1(t, iter, []StringKeyValuePair{
 			{"0", ""},
 			{"0", "v2"},
@@ -71,16 +71,16 @@ func TestTask1FullCompaction(t *testing.T) {
 		})
 	}
 
-	assert.NoError(t, storage.Put(StringKey("0"), []byte("v3")))
-	assert.NoError(t, storage.Put(StringKey("2"), []byte("v3")))
+	assert.NoError(t, storage.Put([]byte("0"), []byte("v3")))
+	assert.NoError(t, storage.Put([]byte("2"), []byte("v3")))
 	Sync(storage)
-	assert.NoError(t, storage.Delete(StringKey("1")))
+	assert.NoError(t, storage.Delete([]byte("1")))
 	Sync(storage)
 	iter = ReadLsmStorageState(storage, func(state *LsmStorageState) *MergeIterator {
 		return ConstructMergeIteratorOverStorage(state)
 	})
 
-	if TSEnabled {
+	if TsEnabled {
 		CheckIterResultByKey1(t, iter, []StringKeyValuePair{
 			{"0", "v3"},
 			{"0", ""},
@@ -109,7 +109,7 @@ func TestTask1FullCompaction(t *testing.T) {
 		return ConstructMergeIteratorOverStorage(state)
 	})
 
-	if TSEnabled {
+	if TsEnabled {
 		CheckIterResultByKey1(t, iter, []StringKeyValuePair{
 			{"0", "v3"},
 			{"0", ""},
@@ -136,7 +136,7 @@ func generateConcatSstForW2D1(startKey uint32, endKey uint32, dir string, id uin
 	builder := NewSsTableBuilder(128)
 	for i := startKey; i < endKey; i++ {
 		key := fmt.Sprintf("%05d", i)
-		builder.Add(StringKey(key), []byte("test"))
+		builder.Add(KeyFromBytesWithTs([]byte(key), TsDefault), []byte("test"))
 	}
 	p := path.Join(dir, fmt.Sprintf("%d.sst", id))
 	sst := utils.Unwrap(builder.buildForTest(p))
@@ -157,23 +157,23 @@ func TestTask2ConcatIterator(t *testing.T) {
 	}
 
 	for key := 0; key < 120; key++ {
-		iter, err := CreateSstConcatIteratorAndSeekToKey(sstables, StringKey(fmt.Sprintf("%05d", key)))
+		iter, err := CreateSstConcatIteratorAndSeekToKey(sstables, KeyFromBytesWithTs([]byte(fmt.Sprintf("%05d", key)), TsDefault))
 		if err != nil {
 			println(key)
 		}
 		if key < 10 {
 			assert.True(t, iter.IsValid())
-			assert.Equal(t, "00010", string(iter.Key().Val))
+			assert.Equal(t, "00010", string(iter.Key().KeyRef()))
 		} else if key >= 110 {
 			assert.False(t, iter.IsValid())
 		} else {
 			assert.True(t, iter.IsValid())
-			assert.Equal(t, fmt.Sprintf("%05d", key), string(iter.Key().Val))
+			assert.Equal(t, fmt.Sprintf("%05d", key), string(iter.Key().KeyRef()))
 		}
 	}
 	iter := utils.Unwrap(CreateSstConcatIteratorAndSeekToFirst(sstables))
 	assert.True(t, iter.IsValid())
-	assert.Equal(t, "00010", string(iter.Key().Val))
+	assert.Equal(t, "00010", string(iter.Key().KeyRef()))
 	for _, sst := range sstables {
 		assert.NoError(t, sst.CloseSstFile())
 	}
@@ -182,11 +182,11 @@ func TestTask2ConcatIterator(t *testing.T) {
 func TestTask3Integration(t *testing.T) {
 	dir := t.TempDir()
 	storage := utils.Unwrap(OpenLsmStorageInner(dir, DefaultForWeek1Test()))
-	assert.NoError(t, storage.Put(StringKey("0"), []byte("2333333")))
-	assert.NoError(t, storage.Put(StringKey("00"), []byte("2333333")))
-	assert.NoError(t, storage.Put(StringKey("4"), []byte("23")))
+	assert.NoError(t, storage.Put([]byte("0"), []byte("2333333")))
+	assert.NoError(t, storage.Put([]byte("00"), []byte("2333333")))
+	assert.NoError(t, storage.Put([]byte("4"), []byte("23")))
 	Sync(storage)
-	assert.NoError(t, storage.Delete(StringKey("4")))
+	assert.NoError(t, storage.Delete([]byte("4")))
 	Sync(storage)
 
 	assert.NoError(t, storage.ForceFullCompaction())
@@ -198,13 +198,13 @@ func TestTask3Integration(t *testing.T) {
 		return len(state.levels[0].ssTables)
 	}) > 0)
 
-	assert.NoError(t, storage.Put(StringKey("1"), []byte("233")))
-	assert.NoError(t, storage.Put(StringKey("2"), []byte("2333")))
+	assert.NoError(t, storage.Put([]byte("1"), []byte("233")))
+	assert.NoError(t, storage.Put([]byte("2"), []byte("2333")))
 	Sync(storage)
 
-	assert.NoError(t, storage.Put(StringKey("00"), []byte("2333")))
-	assert.NoError(t, storage.Put(StringKey("3"), []byte("23333")))
-	assert.NoError(t, storage.Delete(StringKey("1")))
+	assert.NoError(t, storage.Put([]byte("00"), []byte("2333")))
+	assert.NoError(t, storage.Put([]byte("3"), []byte("23333")))
+	assert.NoError(t, storage.Delete([]byte("1")))
 	Sync(storage)
 	assert.NoError(t, storage.ForceFullCompaction())
 
@@ -215,7 +215,7 @@ func TestTask3Integration(t *testing.T) {
 		return len(state.levels[0].ssTables)
 	}) > 0)
 
-	iter := utils.Unwrap(storage.Scan(Unbound(), Unbound()))
+	iter := utils.Unwrap(storage.Scan(UnboundBytes(), UnboundBytes()))
 	CheckLsmIterResultByKey1(t, iter, []StringKeyValuePair{
 		{"0", "2333333"},
 		{"00", "2333"},
@@ -223,10 +223,10 @@ func TestTask3Integration(t *testing.T) {
 		{"3", "23333"},
 	})
 
-	assert.Equal(t, "2333333", string(utils.Unwrap(storage.Get(StringKey("0")))))
-	assert.Equal(t, "2333", string(utils.Unwrap(storage.Get(StringKey("00")))))
-	assert.Equal(t, "2333", string(utils.Unwrap(storage.Get(StringKey("2")))))
-	assert.Equal(t, "23333", string(utils.Unwrap(storage.Get(StringKey("3")))))
+	assert.Equal(t, "2333333", string(utils.Unwrap(storage.Get([]byte("0")))))
+	assert.Equal(t, "2333", string(utils.Unwrap(storage.Get([]byte("00")))))
+	assert.Equal(t, "2333", string(utils.Unwrap(storage.Get([]byte("2")))))
+	assert.Equal(t, "23333", string(utils.Unwrap(storage.Get([]byte("3")))))
 
 	assert.NoError(t, storage.Close())
 }

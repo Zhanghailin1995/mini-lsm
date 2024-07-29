@@ -12,8 +12,8 @@ import (
 
 type BlockMeta struct {
 	offset   uint32
-	firstKey KeyType
-	lastKey  KeyType
+	firstKey KeyBytes
+	lastKey  KeyBytes
 }
 
 func EncodeBlockMeta(blockMeta []*BlockMeta, buf []byte) []byte {
@@ -68,8 +68,8 @@ func DecodeBlockMeta(data []byte) []*BlockMeta {
 		data = data[lastKeyLen:]
 		blockMeta = append(blockMeta, &BlockMeta{
 			offset:   offset,
-			firstKey: KeyType{Val: firstKey},
-			lastKey:  KeyType{Val: lastKey},
+			firstKey: KeyBytes{Val: firstKey},
+			lastKey:  KeyBytes{Val: lastKey},
 		})
 	}
 	if checksum != binary.BigEndian.Uint32(data) {
@@ -219,8 +219,8 @@ type SsTable struct {
 	blockMetaOffset uint32
 	id              uint32
 	blockCache      *BlockCache
-	firstKey        KeyType
-	lastKey         KeyType
+	firstKey        KeyBytes
+	lastKey         KeyBytes
 	bloom           *Bloom
 	maxTs           uint64
 }
@@ -270,7 +270,7 @@ func OpenSsTable(id uint32, blockCache *BlockCache, file *FileObject) (*SsTable,
 	}, nil
 }
 
-func createSsTableMetaOnly(id uint32, fileSize int64, firstKey KeyType, lastKey KeyType) *SsTable {
+func createSsTableMetaOnly(id uint32, fileSize int64, firstKey KeyBytes, lastKey KeyBytes) *SsTable {
 	return &SsTable{
 		file:            createFileObjectSizeOnly(fileSize),
 		firstKey:        firstKey,
@@ -316,7 +316,7 @@ func (s *SsTable) ReadBlockCached(blockIdx uint32) (*Block, error) {
 	return s.readBlock(blockIdx)
 }
 
-func (s *SsTable) FindBlockIdx(key KeyType) uint32 {
+func (s *SsTable) FindBlockIdx(key KeyBytes) uint32 {
 	// 这个方法的实现抄自rust的标准库 partition_point
 	pred := func(meta *BlockMeta) bool {
 		return meta.firstKey.Compare(key) <= 0
@@ -346,11 +346,11 @@ func (s *SsTable) CloseSstFile() error {
 	return s.file.Close()
 }
 
-func (s *SsTable) FirstKey() KeyType {
+func (s *SsTable) FirstKey() KeyBytes {
 	return s.firstKey
 }
 
-func (s *SsTable) LastKey() KeyType {
+func (s *SsTable) LastKey() KeyBytes {
 	return s.lastKey
 }
 

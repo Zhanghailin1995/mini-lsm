@@ -33,7 +33,7 @@ func NewLeveledCompactionController(options *LeveledCompactionOptions) *LeveledC
 }
 
 func (lcc *LeveledCompactionController) FindOverlappingSsts(snapshot *LsmStorageState, sstIds []uint32, inLevel uint32) []uint32 {
-	var beginKey, endKey KeyType
+	var beginKey, endKey KeyBytes
 	minKeySet, maxKeySet := false, false
 
 	for _, id := range sstIds {

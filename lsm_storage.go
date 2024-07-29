@@ -1,6 +1,7 @@
 package mini_lsm
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
 	"github.com/dgryski/go-farm"
@@ -91,19 +92,23 @@ func (lsm *MiniLsm) Sync() error {
 }
 
 func (lsm *MiniLsm) Get(key []byte) ([]byte, error) {
-	return lsm.inner.Get(Key(key))
+	return lsm.inner.Get(key)
+}
+
+func (lsm *MiniLsm) WriteBatch(batch []WriteBatchRecord) error {
+	return lsm.inner.WriteBatch(batch)
 }
 
 func (lsm *MiniLsm) Put(key, value []byte) error {
-	return lsm.inner.Put(Key(key), value)
+	return lsm.inner.Put(key, value)
 }
 
 func (lsm *MiniLsm) Delete(key []byte) error {
-	return lsm.inner.Delete(Key(key))
+	return lsm.inner.Delete(key)
 }
 
 func (lsm *MiniLsm) Scan(lower, upper BytesBound) (*FusedIterator, error) {
-	return lsm.inner.Scan(MapBound(lower), MapBound(upper))
+	return lsm.inner.Scan(lower, upper)
 }
 
 func (lsm *MiniLsm) ForceFlush() error {
@@ -658,14 +663,15 @@ func (lsm *LsmStorageInner) pathOfWal(id uint32) string {
 	return pathOfWalStatic(lsm.path, id)
 }
 
-func keyWithin(userKey, tableBegin, tableEnd KeyType) bool {
-	return tableBegin.Compare(userKey) <= 0 && userKey.Compare(tableEnd) <= 0
+func keyWithin(userKey, tableBegin, tableEnd KeyBytes) bool {
+	return tableBegin.KeyRefCompare(userKey) <= 0 && userKey.KeyRefCompare(tableEnd) <= 0
 }
 
-func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
+func (lsm *LsmStorageInner) Get(k []byte) ([]byte, error) {
 	lsm.rwLock.RLock()
 	snapshot := lsm.state
 	lsm.rwLock.RUnlock()
+	key := KeyOf(k)
 	// 在读取时我们只需要获取读时快照就行了，这避免了长时间持久锁，我们使用写时复制的方法
 	// 写数据时会复制一份状态副本（非数据副本），通过在副本上更新数据，更新完成后将原状态替换为副本（写时持有写锁，所以不用担心数据竞争问题）
 	// 读取时我们只需要获取状态副本并且保持为一个本地变量，这样就不会受到写时复制的影响
@@ -694,7 +700,7 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 	// 在合并成 two merge iterator
 	l0iters := make([]StorageIterator, 0, len(snapshot.l0SsTables))
 
-	keepTable := func(key KeyType, table *SsTable) bool {
+	keepTable := func(key KeyBytes, table *SsTable) bool {
 		if keyWithin(key, table.FirstKey(), table.LastKey()) {
 			if table.bloom != nil {
 				if table.bloom.MayContain(farm.Fingerprint32(key.Val)) {
@@ -710,7 +716,7 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 	for _, id := range snapshot.l0SsTables {
 		sst := snapshot.sstables[id]
 		if keepTable(key, sst) {
-			sstIter, err := CreateSsTableIteratorAndSeekToKey(sst, key)
+			sstIter, err := CreateSsTableIteratorAndSeekToKey(sst, KeyFromBytesWithTs(key.KeyRef(), TsRangeBegin))
 			if err != nil {
 				return nil, err
 			}
@@ -727,7 +733,7 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 				levelSsts = append(levelSsts, sst)
 			}
 		}
-		levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, key)
+		levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, KeyFromBytesWithTs(key.KeyRef(), TsRangeBegin))
 		if err != nil {
 			return nil, err
 		}
@@ -735,7 +741,7 @@ func (lsm *LsmStorageInner) Get(key KeyType) ([]byte, error) {
 	}
 	levelIter := CreateMergeIterator(levelIters)
 	twoMergeIter, _ := CreateTwoMergeIterator(l0Iter, levelIter)
-	if twoMergeIter.IsValid() && twoMergeIter.Key().Compare(key) == 0 && len(twoMergeIter.Value()) > 0 {
+	if twoMergeIter.IsValid() && twoMergeIter.Key().KeyRefCompare(key) == 0 && len(twoMergeIter.Value()) > 0 {
 		return utils.Copy(twoMergeIter.Value()), nil
 	}
 
@@ -785,7 +791,7 @@ func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
 			utils.Assert(len(delOp.K) != 0, "key cannot be empty")
 			var size uint32
 			lsm.rwLock.RLock()
-			err := lsm.state.memTable.Put(Key(delOp.K), []byte{})
+			err := lsm.state.memTable.Put(KeyOf(delOp.K), []byte{})
 			if err != nil {
 				lsm.rwLock.RUnlock()
 				return err
@@ -804,7 +810,7 @@ func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
 
 			var size uint32
 			lsm.rwLock.RLock()
-			err := lsm.state.memTable.Put(Key(putOp.K), putOp.V)
+			err := lsm.state.memTable.Put(KeyOf(putOp.K), putOp.V)
 			if err != nil {
 				lsm.rwLock.RUnlock()
 				return err
@@ -820,48 +826,50 @@ func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
 	return nil
 }
 
-func (lsm *LsmStorageInner) Put(key KeyType, value []byte) error {
+func (lsm *LsmStorageInner) Put(key []byte, value []byte) error {
 	r := &PutOp{
-		K: key.Val,
+		K: key,
 		V: value,
 	}
 	return lsm.WriteBatch([]WriteBatchRecord{r})
 }
 
-func (lsm *LsmStorageInner) Delete(key KeyType) error {
+func (lsm *LsmStorageInner) Delete(key []byte) error {
 	r := &DelOp{
-		K: key.Val,
+		K: key,
 	}
 	return lsm.WriteBatch([]WriteBatchRecord{r})
 }
 
-func rangeOverlap(userBegin, userEnd KeyBound, tableBegin, tableEnd KeyType) bool {
-	if userEnd.Type == Excluded && userEnd.Val.Compare(tableBegin) <= 0 {
+func rangeOverlap(userBegin, userEnd BytesBound, tableBegin, tableEnd KeyBytes) bool {
+	if userEnd.Type == Excluded && bytes.Compare(userEnd.Val, tableBegin.KeyRef()) <= 0 {
 		return false
-	} else if userEnd.Type == Included && userEnd.Val.Compare(tableBegin) < 0 {
+	} else if userEnd.Type == Included && bytes.Compare(userEnd.Val, tableBegin.KeyRef()) < 0 {
 		return false
 	}
-	if userBegin.Type == Excluded && userBegin.Val.Compare(tableEnd) >= 0 {
+	if userBegin.Type == Excluded && bytes.Compare(userBegin.Val, tableEnd.KeyRef()) >= 0 {
 		return false
-	} else if userBegin.Type == Included && userBegin.Val.Compare(tableEnd) > 0 {
+	} else if userBegin.Type == Included && bytes.Compare(userBegin.Val, tableEnd.KeyRef()) > 0 {
 		return false
 	}
 
 	return true
 }
 
-func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) {
+func (lsm *LsmStorageInner) Scan(lower, upper BytesBound) (*FusedIterator, error) {
 	// 才用写时复制的策略，避免一直持有锁
 	lsm.rwLock.RLock()
 	snapshot := lsm.state
 	lsm.rwLock.RUnlock()
 
 	var memtableIters = make([]StorageIterator, 0, 1+len(snapshot.immMemTable))
-	memtableIters = append(memtableIters, snapshot.memTable.Scan(lower, upper))
+	memtableIters = append(memtableIters, snapshot.memTable.Scan(MapBound(lower), MapBound(upper)))
 	for _, mt := range snapshot.immMemTable {
-		memtableIters = append(memtableIters, mt.Scan(lower, upper))
+		memtableIters = append(memtableIters, mt.Scan(MapBound(lower), MapBound(upper)))
 	}
 	memtableMergeIter := CreateMergeIterator(memtableIters)
+
+	//PrintIter(memtableMergeIter)
 
 	var l0Iters = make([]StorageIterator, 0, len(snapshot.l0SsTables))
 	for _, id := range snapshot.l0SsTables {
@@ -870,16 +878,16 @@ func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) 
 			var sstableIter *SsTableIterator
 			var err error
 			if lower.Type == Included {
-				sstableIter, err = CreateSsTableIteratorAndSeekToKey(sst, lower.Val)
+				sstableIter, err = CreateSsTableIteratorAndSeekToKey(sst, KeyFromBytesWithTs(lower.Val, TsRangeBegin))
 				if err != nil {
 					return nil, err
 				}
 			} else if lower.Type == Excluded {
-				sstableIter, err = CreateSsTableIteratorAndSeekToKey(sst, lower.Val)
+				sstableIter, err = CreateSsTableIteratorAndSeekToKey(sst, KeyFromBytesWithTs(lower.Val, TsRangeBegin))
 				if err != nil {
 					return nil, err
 				}
-				if sstableIter.IsValid() && sstableIter.Key().Compare(lower.Val) == 0 {
+				if sstableIter.IsValid() && bytes.Compare(sstableIter.Key().KeyRef(), lower.Val) == 0 {
 					err := sstableIter.Next()
 					if err != nil {
 						return nil, err
@@ -907,17 +915,17 @@ func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) 
 			}
 		}
 		if lower.Type == Included {
-			levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, lower.Val)
+			levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, KeyFromBytesWithTs(lower.Val, TsRangeBegin))
 			if err != nil {
 				return nil, err
 			}
 			levelIters = append(levelIters, levelIter)
 		} else if lower.Type == Excluded {
-			levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, lower.Val)
+			levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, KeyFromBytesWithTs(lower.Val, TsRangeBegin))
 			if err != nil {
 				return nil, err
 			}
-			if levelIter.IsValid() && levelIter.Key().Compare(lower.Val) == 0 {
+			if levelIter.IsValid() && bytes.Compare(levelIter.Key().KeyRef(), lower.Val) == 0 {
 				err := levelIter.Next()
 				if err != nil {
 					return nil, err
@@ -948,11 +956,10 @@ func (lsm *LsmStorageInner) Scan(lower, upper KeyBound) (*FusedIterator, error) 
 		return nil, err
 	}
 
-	// PrintIter(lsmIterator)
-	lsmIterator, err := CreateLsmIterator(lsmIteratorInner, upper)
+	lsmIterator, err := CreateLsmIterator(lsmIteratorInner, MapBound(upper))
 	if err != nil {
 		return nil, err
 	}
-
+	//PrintIter(lsmIterator)
 	return CreateFusedIterator(lsmIterator), nil
 }

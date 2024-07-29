@@ -27,9 +27,9 @@ func CreateLsmIterator(iter *LsmIteratorInner, endBound KeyBound) (*LsmIterator,
 
 func (l *LsmIterator) moveToNonDelete() error {
 	for {
-		//println("l.inner.Key: ", string(l.inner.Key().Val), " l.inner.Value: ", string(l.inner.Value()))
+		//println("l.inner.KeyOf: ", string(l.inner.Key().KeyRef()), " l.inner.Value: ", string(l.inner.Value()))
 		if l.IsValid() && len(l.inner.Value()) == 0 {
-			err := l.Next()
+			err := l.nextInner()
 			if err != nil {
 				return err
 			}
@@ -50,9 +50,10 @@ func (l *LsmIterator) nextInner() error {
 		return nil
 	}
 	if l.endBound.Type == Included {
-		l.isValid = l.inner.Key().Compare(l.endBound.Val) <= 0
+		// println(string(l.inner.Key().KeyRef()), string(l.endBound.Val.KeyRef()))
+		l.isValid = l.inner.Key().KeyRefCompare(l.endBound.Val) <= 0
 	} else if l.endBound.Type == Excluded {
-		l.isValid = l.inner.Key().Compare(l.endBound.Val) < 0
+		l.isValid = l.inner.Key().KeyRefCompare(l.endBound.Val) < 0
 	}
 	return nil
 }
@@ -61,8 +62,8 @@ func (l *LsmIterator) NumActiveIterators() int {
 	return l.inner.NumActiveIterators()
 }
 
-func (l *LsmIterator) Key() KeyType {
-	return l.inner.Key()
+func (l *LsmIterator) Key() IteratorKey {
+	return KeySlice(l.inner.Key().KeyRef())
 }
 
 func (l *LsmIterator) Value() []byte {
@@ -92,7 +93,7 @@ func CreateFusedIterator(iter StorageIterator) *FusedIterator {
 	}
 }
 
-func (f *FusedIterator) Key() KeyType {
+func (f *FusedIterator) Key() IteratorKey {
 	if f.hasError || !f.iter.IsValid() {
 		panic("called key on an invalid iterator")
 	}

@@ -63,14 +63,14 @@ func RecoverWal(p string, skiplist *skiplist.SkipList) (*Wal, error) {
 		lIdx += 4
 		idx += 4
 		content = content[lIdx:]
-		skiplist.Set(Key(slices.Clone(key)), slices.Clone(val))
+		skiplist.Set(KeyOf(slices.Clone(key)), slices.Clone(val))
 	}
 	return &Wal{
 		file: file,
 	}, nil
 }
 
-func (w *Wal) Put(k KeyType, v []byte) error {
+func (w *Wal) Put(k KeyBytes, v []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	buf := make([]byte, 2+2+len(k.Val)+len(v)+4)

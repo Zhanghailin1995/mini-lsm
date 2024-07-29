@@ -9,8 +9,8 @@ import (
 
 type SsTableBuilder struct {
 	blockBuilder *BlockBuilder
-	firstKey     KeyType
-	lastKey      KeyType
+	firstKey     KeyBytes
+	lastKey      KeyBytes
 	data         []byte
 	meta         []*BlockMeta
 	blockSize    uint32
@@ -20,8 +20,8 @@ type SsTableBuilder struct {
 func NewSsTableBuilder(blockSize uint32) *SsTableBuilder {
 	return &SsTableBuilder{
 		blockBuilder: NewBlockBuilder(blockSize),
-		firstKey:     Key([]byte{}),
-		lastKey:      Key([]byte{}),
+		firstKey:     KeyOf([]byte{}),
+		lastKey:      KeyOf([]byte{}),
 		data:         make([]byte, 0), // 应该给一个capacity
 		meta:         make([]*BlockMeta, 0),
 		blockSize:    blockSize,
@@ -29,7 +29,7 @@ func NewSsTableBuilder(blockSize uint32) *SsTableBuilder {
 	}
 }
 
-func (s *SsTableBuilder) Add(key KeyType, value []byte) {
+func (s *SsTableBuilder) Add(key KeyBytes, value []byte) {
 	if len(s.firstKey.Val) == 0 {
 		s.firstKey = key.Clone()
 	}
@@ -54,8 +54,8 @@ func (s *SsTableBuilder) finishBlock() {
 		firstKey: s.firstKey.Clone(),
 		lastKey:  s.lastKey.Clone(),
 	})
-	s.firstKey = Key([]byte{})
-	s.lastKey = Key([]byte{})
+	s.firstKey = KeyOf([]byte{})
+	s.lastKey = KeyOf([]byte{})
 	checksum := utils.Crc32(encodedBlock)
 	checkSumBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(checkSumBuf, checksum)

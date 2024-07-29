@@ -37,7 +37,7 @@ func (s *SsTableIterator) SeekToFirst() error {
 	return nil
 }
 
-func seekSsTableToKeyInner(sst *SsTable, key KeyType) (uint32, *BlockIterator, error) {
+func seekSsTableToKeyInner(sst *SsTable, key KeyBytes) (uint32, *BlockIterator, error) {
 	blockIdx := sst.FindBlockIdx(key)
 	block, err := sst.ReadBlockCached(blockIdx)
 	if err != nil {
@@ -57,7 +57,7 @@ func seekSsTableToKeyInner(sst *SsTable, key KeyType) (uint32, *BlockIterator, e
 	return blockIdx, blkIter, nil
 }
 
-func CreateSsTableIteratorAndSeekToKey(sst *SsTable, key KeyType) (*SsTableIterator, error) {
+func CreateSsTableIteratorAndSeekToKey(sst *SsTable, key KeyBytes) (*SsTableIterator, error) {
 	blkIdx, blkIter, err := seekSsTableToKeyInner(sst, key)
 	if err != nil {
 		return nil, err
@@ -69,7 +69,7 @@ func CreateSsTableIteratorAndSeekToKey(sst *SsTable, key KeyType) (*SsTableItera
 	}, nil
 }
 
-func (s *SsTableIterator) SeekToKey(key KeyType) error {
+func (s *SsTableIterator) SeekToKey(key KeyBytes) error {
 	blkIdx, blkIter, err := seekSsTableToKeyInner(s.table, key)
 	if err != nil {
 		return err
@@ -79,7 +79,7 @@ func (s *SsTableIterator) SeekToKey(key KeyType) error {
 	return nil
 }
 
-func (s *SsTableIterator) Key() KeyType {
+func (s *SsTableIterator) Key() IteratorKey {
 	return s.blkIter.Key()
 }
 

@@ -6,7 +6,7 @@ type StorageIterator interface {
 	Value() []byte
 
 	// Key Get the current key
-	Key() KeyType
+	Key() IteratorKey
 
 	// IsValid Check if the current iterator is valid
 	IsValid() bool
@@ -22,7 +22,7 @@ func PrintIter(iter StorageIterator) {
 	println()
 	println("================================")
 	for iter.IsValid() {
-		println(string(iter.Key().Val), string(iter.Value()))
+		println(string(iter.Key().KeyRef()), string(iter.Value()))
 		iter.Next()
 	}
 	println("================================")
