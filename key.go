@@ -6,7 +6,7 @@ import (
 	"math"
 )
 
-const TsEnabled = false
+const TsEnabled = true
 
 const (
 	TsDefault    uint64 = 0
@@ -40,12 +40,12 @@ func KeySliceOf(v []byte) KeySlice {
 
 func (k KeyBytes) Compare(other IteratorKey) int {
 	x := bytes.Compare(k.Val, other.(KeyBytes).Val)
+	// 反转ts的比较结果，ts较大的在前，较小的在后
 	if x == 0 {
-		x1 := int(k.Ts - other.(KeyBytes).Ts)
-		if x1 > 0 {
-			return 1
-		} else if x1 < 0 {
+		if k.Ts > other.(KeyBytes).Ts {
 			return -1
+		} else if k.Ts < other.(KeyBytes).Ts {
+			return 1
 		} else {
 			return 0
 		}
@@ -113,6 +113,7 @@ func KeyOf(v []byte) KeyBytes {
 func StringKey(v string) KeyBytes {
 	return KeyBytes{
 		Val: []byte(v),
+		Ts:  TsDefault,
 	}
 }
 
@@ -142,6 +143,10 @@ func MapBound(bound BytesBound) KeyBound {
 	return KeyBound{Val: KeyOf(bound.Val), Type: bound.Type}
 }
 
+func MapKeyBoundPlusTs(bound BytesBound, ts uint64) KeyBound {
+	return KeyBound{Val: KeyFromBytesWithTs(bound.Val, ts), Type: bound.Type}
+}
+
 func IncludeBytes(val []byte) BytesBound {
 	return BytesBounded(val, Included)
 }
@@ -162,8 +167,16 @@ func Include(val KeyBytes) KeyBound {
 	return Bounded(val, Included)
 }
 
+func IncludeWithTs(k []byte, ts uint64) KeyBound {
+	return Bounded(KeyFromBytesWithTs(k, ts), Included)
+}
+
 func Exclude(val KeyBytes) KeyBound {
 	return Bounded(val, Excluded)
+}
+
+func ExcludeWithTs(k []byte, ts uint64) KeyBound {
+	return Bounded(KeyFromBytesWithTs(k, ts), Excluded)
 }
 
 func Unbound() KeyBound {

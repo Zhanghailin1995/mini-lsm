@@ -1,6 +1,9 @@
 package mini_lsm
 
-import "errors"
+import (
+	"bytes"
+	"errors"
+)
 
 // a: TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>
 // b: SstConcatIterator,
@@ -10,6 +13,7 @@ type LsmIterator struct {
 	inner    *LsmIteratorInner
 	endBound KeyBound
 	isValid  bool
+	prevKey  []byte
 }
 
 func CreateLsmIterator(iter *LsmIteratorInner, endBound KeyBound) (*LsmIterator, error) {
@@ -17,26 +21,47 @@ func CreateLsmIterator(iter *LsmIteratorInner, endBound KeyBound) (*LsmIterator,
 		inner:    iter,
 		isValid:  iter.IsValid(),
 		endBound: endBound,
+		prevKey:  make([]byte, 0),
 	}
-	err := l.moveToNonDelete()
+	err := l.moveToKey()
 	if err != nil {
 		return nil, err
 	}
 	return l, nil
 }
 
-func (l *LsmIterator) moveToNonDelete() error {
+//func (l *LsmIterator) moveToNonDelete() error {
+//	for {
+//		//println("l.inner.KeyOf: ", string(l.inner.Key().KeyRef()), " l.inner.Value: ", string(l.inner.Value()))
+//		if l.IsValid() && len(l.inner.Value()) == 0 {
+//			err := l.nextInner()
+//			if err != nil {
+//				return err
+//			}
+//		} else {
+//			break
+//		}
+//
+//	}
+//	return nil
+//}
+
+func (l *LsmIterator) moveToKey() error {
+	// 这个函数的作用是迭代掉所有相同的key(ts 不同)
 	for {
-		//println("l.inner.KeyOf: ", string(l.inner.Key().KeyRef()), " l.inner.Value: ", string(l.inner.Value()))
-		if l.IsValid() && len(l.inner.Value()) == 0 {
+		for l.IsValid() && bytes.Compare(l.inner.Key().KeyRef(), l.prevKey) == 0 {
 			err := l.nextInner()
 			if err != nil {
 				return err
 			}
-		} else {
+		}
+		if !l.inner.IsValid() {
 			break
 		}
-
+		l.prevKey = append(l.prevKey[:0], l.inner.Key().KeyRef()...)
+		if len(l.inner.Value()) != 0 {
+			break
+		}
 	}
 	return nil
 }
@@ -51,6 +76,9 @@ func (l *LsmIterator) nextInner() error {
 	}
 	if l.endBound.Type == Included {
 		// println(string(l.inner.Key().KeyRef()), string(l.endBound.Val.KeyRef()))
+		// 这里为什么只比较key，而不比较ts，因为lsmIterator已经是比较外层的接口了，他的endBound只是一个[]byte
+		// 而根据我们的定义，("a", 233) < ("a", 0) < ("b", 235)
+		// 如果是include,那么我们其实找到的第一个key就是最新的key,而exclude则要完全跳过这个key，不管ts是多少
 		l.isValid = l.inner.Key().KeyRefCompare(l.endBound.Val) <= 0
 	} else if l.endBound.Type == Excluded {
 		l.isValid = l.inner.Key().KeyRefCompare(l.endBound.Val) < 0
@@ -78,7 +106,7 @@ func (l *LsmIterator) Next() error {
 	if err := l.nextInner(); err != nil {
 		return err
 	}
-	return l.moveToNonDelete()
+	return l.moveToKey()
 }
 
 type FusedIterator struct {

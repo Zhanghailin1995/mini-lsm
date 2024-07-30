@@ -111,6 +111,10 @@ func (lsm *MiniLsm) Scan(lower, upper BytesBound) (*FusedIterator, error) {
 	return lsm.inner.Scan(lower, upper)
 }
 
+func (lsm *MiniLsm) NewTxn() error {
+	return lsm.inner.NewTxn()
+}
+
 func (lsm *MiniLsm) ForceFlush() error {
 	lsm.inner.rwLock.RLock()
 	if !lsm.inner.state.memTable.IsEmpty() {
@@ -150,6 +154,13 @@ type LsmStorageInner struct {
 	state                *LsmStorageState
 	compactionController *CompactionController
 	manifest             *Manifest
+	mvcc                 *LsmMvccInner
+}
+
+func (lsm *LsmStorageInner) ReadState() *LsmStorageState {
+	lsm.rwLock.RLock()
+	defer lsm.rwLock.RUnlock()
+	return lsm.state
 }
 
 func ReadLsmStorageState[T any](lsm *LsmStorageInner, f func(*LsmStorageState) T) T {
@@ -458,12 +469,25 @@ func OpenLsmStorageInner(p string, options *LsmStorageOptions) (*LsmStorageInner
 		compactionController: cc,
 		options:              options,
 		manifest:             manifest,
+		mvcc:                 NewLsmMvccInner(0),
 	}
 	err = storage.SyncDir()
 	if err != nil {
 		return nil, err
 	}
 	return storage, nil
+}
+
+func (lsm *LsmStorageInner) Mvcc() *LsmMvccInner {
+	return lsm.mvcc
+}
+
+func (lsm *LsmStorageInner) NewTxn() error {
+	return nil
+}
+
+func (lsm *LsmStorageInner) Manifest() *Manifest {
+	return lsm.manifest
 }
 
 func (lsm *LsmStorageInner) Close() error {
@@ -663,36 +687,27 @@ func (lsm *LsmStorageInner) pathOfWal(id uint32) string {
 	return pathOfWalStatic(lsm.path, id)
 }
 
-func keyWithin(userKey, tableBegin, tableEnd KeyBytes) bool {
-	return tableBegin.KeyRefCompare(userKey) <= 0 && userKey.KeyRefCompare(tableEnd) <= 0
+func keyWithin(userKey []byte, tableBegin, tableEnd KeyBytes) bool {
+	return bytes.Compare(userKey, tableBegin.KeyRef()) >= 0 && bytes.Compare(userKey, tableEnd.KeyRef()) <= 0
 }
 
 func (lsm *LsmStorageInner) Get(k []byte) ([]byte, error) {
 	lsm.rwLock.RLock()
 	snapshot := lsm.state
 	lsm.rwLock.RUnlock()
-	key := KeyOf(k)
 	// 在读取时我们只需要获取读时快照就行了，这避免了长时间持久锁，我们使用写时复制的方法
 	// 写数据时会复制一份状态副本（非数据副本），通过在副本上更新数据，更新完成后将原状态替换为副本（写时持有写锁，所以不用担心数据竞争问题）
 	// 读取时我们只需要获取状态副本并且保持为一个本地变量，这样就不会受到写时复制的影响
-	v := snapshot.memTable.Get(key)
-	// 空值和nil值的区别
-	// length 为 0的空值代表数据被删除了，nil值代表数据根本不存在
-	if v != nil {
-		if len(v) == 0 {
-			return nil, nil
-		}
-		return v, nil
-	}
-	// 从 immutable memtable 中查找
+	// 这里似乎可以直接先迭代一下memtable的数据
+	var memtableIters = make([]StorageIterator, 0, 1+len(snapshot.immMemTable))
+	memtableIters = append(memtableIters, snapshot.memTable.Scan(
+		IncludeWithTs(k, TsRangeBegin),
+		IncludeWithTs(k, TsRangeEnd)),
+	)
 	for _, mt := range snapshot.immMemTable {
-		if v := mt.Get(key); v != nil {
-			if len(v) == 0 {
-				return nil, nil
-			}
-			return v, nil
-		}
+		memtableIters = append(memtableIters, mt.Scan(IncludeWithTs(k, TsRangeBegin), IncludeWithTs(k, TsRangeEnd)))
 	}
+	memtableMergeIter := CreateMergeIterator(memtableIters)
 	// 没有的话，再下钻到 sstables 中查找
 	// 从l0 和 l1 的sstables 中构建一个iterator
 	// l0合并成 merge iterator
@@ -700,10 +715,10 @@ func (lsm *LsmStorageInner) Get(k []byte) ([]byte, error) {
 	// 在合并成 two merge iterator
 	l0iters := make([]StorageIterator, 0, len(snapshot.l0SsTables))
 
-	keepTable := func(key KeyBytes, table *SsTable) bool {
+	keepTable := func(key []byte, table *SsTable) bool {
 		if keyWithin(key, table.FirstKey(), table.LastKey()) {
 			if table.bloom != nil {
-				if table.bloom.MayContain(farm.Fingerprint32(key.Val)) {
+				if table.bloom.MayContain(farm.Fingerprint32(key)) {
 					return true
 				}
 			} else {
@@ -715,8 +730,8 @@ func (lsm *LsmStorageInner) Get(k []byte) ([]byte, error) {
 
 	for _, id := range snapshot.l0SsTables {
 		sst := snapshot.sstables[id]
-		if keepTable(key, sst) {
-			sstIter, err := CreateSsTableIteratorAndSeekToKey(sst, KeyFromBytesWithTs(key.KeyRef(), TsRangeBegin))
+		if keepTable(k, sst) {
+			sstIter, err := CreateSsTableIteratorAndSeekToKey(sst, KeyFromBytesWithTs(k, TsRangeBegin))
 			if err != nil {
 				return nil, err
 			}
@@ -729,22 +744,32 @@ func (lsm *LsmStorageInner) Get(k []byte) ([]byte, error) {
 		levelSsts := make([]*SsTable, 0, len(level.ssTables))
 		for _, id := range level.ssTables {
 			sst := snapshot.sstables[id]
-			if keepTable(key, sst) {
+			if keepTable(k, sst) {
 				levelSsts = append(levelSsts, sst)
 			}
 		}
-		levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, KeyFromBytesWithTs(key.KeyRef(), TsRangeBegin))
+		levelIter, err := CreateSstConcatIteratorAndSeekToKey(levelSsts, KeyFromBytesWithTs(k, TsRangeBegin))
 		if err != nil {
 			return nil, err
 		}
 		levelIters = append(levelIters, levelIter)
 	}
 	levelIter := CreateMergeIterator(levelIters)
-	twoMergeIter, _ := CreateTwoMergeIterator(l0Iter, levelIter)
-	if twoMergeIter.IsValid() && twoMergeIter.Key().KeyRefCompare(key) == 0 && len(twoMergeIter.Value()) > 0 {
-		return utils.Copy(twoMergeIter.Value()), nil
+	iterator, err := CreateTwoMergeIterator(memtableMergeIter, l0Iter)
+	if err != nil {
+		return nil, err
 	}
-
+	iterator, err = CreateTwoMergeIterator(iterator, levelIter)
+	if err != nil {
+		return nil, err
+	}
+	lsmIter, err := CreateLsmIterator(iterator, Unbound())
+	if err != nil {
+		return nil, err
+	}
+	if lsmIter.IsValid() && bytes.Compare(lsmIter.Key().KeyRef(), k) == 0 && len(lsmIter.Value()) != 0 {
+		return slices.Clone(lsmIter.Value()), nil
+	}
 	return nil, nil
 }
 
@@ -784,6 +809,9 @@ func (d *DelOp) IsWriteOp() bool {
 }
 
 func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
+	lsm.Mvcc().WriteLock.Lock()
+	defer lsm.Mvcc().WriteLock.Unlock()
+	ts := lsm.Mvcc().LatestCommitTs() + 1
 	for _, record := range batch {
 		switch record.Type() {
 		case Del:
@@ -791,7 +819,7 @@ func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
 			utils.Assert(len(delOp.K) != 0, "key cannot be empty")
 			var size uint32
 			lsm.rwLock.RLock()
-			err := lsm.state.memTable.Put(KeyOf(delOp.K), []byte{})
+			err := lsm.state.memTable.Put(KeyFromBytesWithTs(delOp.K, ts), []byte{})
 			if err != nil {
 				lsm.rwLock.RUnlock()
 				return err
@@ -810,7 +838,7 @@ func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
 
 			var size uint32
 			lsm.rwLock.RLock()
-			err := lsm.state.memTable.Put(KeyOf(putOp.K), putOp.V)
+			err := lsm.state.memTable.Put(KeyFromBytesWithTs(putOp.K, ts), putOp.V)
 			if err != nil {
 				lsm.rwLock.RUnlock()
 				return err
@@ -823,6 +851,7 @@ func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
 			}
 		}
 	}
+	lsm.Mvcc().UpdateCommitTs(ts)
 	return nil
 }
 
@@ -863,9 +892,9 @@ func (lsm *LsmStorageInner) Scan(lower, upper BytesBound) (*FusedIterator, error
 	lsm.rwLock.RUnlock()
 
 	var memtableIters = make([]StorageIterator, 0, 1+len(snapshot.immMemTable))
-	memtableIters = append(memtableIters, snapshot.memTable.Scan(MapBound(lower), MapBound(upper)))
+	memtableIters = append(memtableIters, snapshot.memTable.Scan(MapKeyBoundPlusTs(lower, TsRangeBegin), MapKeyBoundPlusTs(upper, TsRangeEnd)))
 	for _, mt := range snapshot.immMemTable {
-		memtableIters = append(memtableIters, mt.Scan(MapBound(lower), MapBound(upper)))
+		memtableIters = append(memtableIters, mt.Scan(MapKeyBoundPlusTs(lower, TsRangeBegin), MapKeyBoundPlusTs(upper, TsRangeEnd)))
 	}
 	memtableMergeIter := CreateMergeIterator(memtableIters)
 

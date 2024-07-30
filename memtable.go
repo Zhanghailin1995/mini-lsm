@@ -3,6 +3,7 @@ package mini_lsm
 import (
 	"github.com/Zhanghailin1995/mini-lsm/utils"
 	"github.com/huandu/skiplist"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -16,7 +17,7 @@ type MemTable struct {
 }
 
 var CompareKeyFunc = skiplist.GreaterThanFunc(func(a, b interface{}) int {
-	return a.(KeyBytes).KeyRefCompare(b.(KeyBytes))
+	return a.(KeyBytes).Compare(b.(KeyBytes))
 })
 
 func CreateMemTable(id uint32) *MemTable {
@@ -67,7 +68,7 @@ func (m *MemTable) Close() error {
 func (m *MemTable) Put(key KeyBytes, value []byte) error {
 	estimatedSize := uint32(len(key.Val) + len(value))
 	m.rwLock.Lock()
-	m.skipMap.Set(KeyFromBytesWithTs(key.KeyRef(), TsDefault), utils.Copy(value))
+	m.skipMap.Set(key.Clone(), slices.Clone(value))
 	m.rwLock.Unlock()
 	atomic.AddUint32(&m.approximateSize, estimatedSize)
 	if m.wal != nil {
@@ -102,12 +103,18 @@ func (m *MemTable) Scan(lower, upper KeyBound) *MemTableIterator {
 	return CreateMemTableIterator(m.skipMap, lower, upper)
 }
 
+func (m *MemTable) ForTestingScanSlice(lower, upper BytesBound) *MemTableIterator {
+	m.rwLock.RLock()
+	defer m.rwLock.RUnlock()
+	return CreateMemTableIterator(m.skipMap, MapKeyBoundPlusTs(lower, TsDefault), MapKeyBoundPlusTs(upper, TsDefault))
+}
+
 func (m *MemTable) Flush(builder *SsTableBuilder) error {
 	m.rwLock.RLock()
 	defer m.rwLock.RUnlock()
 	iter := m.skipMap.Front()
 	for iter != nil {
-		builder.Add(KeyFromBytesWithTs(iter.Key().(KeyBytes).KeyRef(), TsDefault), iter.Value.([]byte))
+		builder.Add(iter.Key().(KeyBytes), iter.Value.([]byte))
 		iter = iter.Next()
 	}
 	return nil
@@ -117,12 +124,12 @@ func (m *MemTable) ApproximateSize() uint32 {
 	return atomic.LoadUint32(&m.approximateSize)
 }
 
-func (m *MemTable) ForTestingPutSlice(key KeyBytes, value []byte) error {
-	return m.Put(key, value)
+func (m *MemTable) ForTestingPutSlice(key []byte, value []byte) error {
+	return m.Put(KeyFromBytesWithTs(key, TsDefault), value)
 }
 
-func (m *MemTable) ForTestingGetSlice(key KeyBytes) []byte {
-	return m.Get(key)
+func (m *MemTable) ForTestingGetSlice(key []byte) []byte {
+	return m.Get(KeyFromBytesWithTs(key, TsDefault))
 }
 
 func (m *MemTable) IsEmpty() bool {
@@ -140,8 +147,8 @@ func newMemTableIterator(ele *skiplist.Element, upper KeyBound) *MemTableIterato
 	var k KeyBytes
 	var v []byte
 	if ele != nil {
-		k = KeyOf(utils.Copy(ele.Key().(KeyBytes).Val))
-		v = utils.Copy(ele.Value.([]byte))
+		k = ele.Key().(KeyBytes).Clone()
+		v = slices.Clone(ele.Value.([]byte))
 	} else {
 		k = KeyBytes{Val: []byte{}}
 		v = nil
@@ -157,10 +164,8 @@ func newMemTableIterator(ele *skiplist.Element, upper KeyBound) *MemTableIterato
 
 func CreateMemTableIterator(list *skiplist.SkipList, lower, upper KeyBound) *MemTableIterator {
 	if lower.Type == Unbounded {
-		// return &MemTableIterator{ele: list.Front(), upper: upper}
 		return newMemTableIterator(list.Front(), upper)
 	} else if lower.Type == Included {
-		// return &MemTableIterator{ele: list.Find(lower.Val), upper: upper}
 		return newMemTableIterator(list.Find(lower.Val), upper)
 	} else {
 		ele := list.Find(lower.Val)
@@ -169,6 +174,12 @@ func CreateMemTableIterator(list *skiplist.SkipList, lower, upper KeyBound) *Mem
 		}
 		return newMemTableIterator(ele, upper)
 	}
+	//if lower.Type == Unbounded {
+	//	// return &MemTableIterator{ele: list.Front(), upper: upper}
+	//	return newMemTableIterator(list.Front(), upper)
+	//} else {
+	//	return newMemTableIterator(list.Find(lower.Val), upper)
+	//}
 }
 
 func (m *MemTableIterator) Value() []byte {
@@ -178,7 +189,7 @@ func (m *MemTableIterator) Value() []byte {
 
 func (m *MemTableIterator) Key() IteratorKey {
 	k := m.currentKey
-	return KeyFromBytesWithTs(k.Val, TsDefault)
+	return k
 }
 
 func (m *MemTableIterator) IsValid() bool {
@@ -208,7 +219,7 @@ func entryToKeyAndValue(entry *skiplist.Element) (KeyBytes, []byte) {
 	if entry == nil {
 		return KeyBytes{Val: []byte{}}, nil
 	} else {
-		return KeyOf(utils.Copy(entry.Key().(KeyBytes).Val)), utils.Copy(entry.Value.([]byte))
+		return entry.Key().(KeyBytes).Clone(), slices.Clone(entry.Value.([]byte))
 	}
 }
 

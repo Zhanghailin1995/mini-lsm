@@ -7,12 +7,12 @@ import (
 
 func TestTask1MemTableIter(t *testing.T) {
 	memTable := CreateMemTable(0)
-	assert.NoError(t, memTable.ForTestingPutSlice(KeyOf([]byte("key1")), []byte("value1")))
-	assert.NoError(t, memTable.ForTestingPutSlice(KeyOf([]byte("key2")), []byte("value2")))
-	assert.NoError(t, memTable.ForTestingPutSlice(KeyOf([]byte("key3")), []byte("value3")))
+	assert.NoError(t, memTable.ForTestingPutSlice(b("key1"), []byte("value1")))
+	assert.NoError(t, memTable.ForTestingPutSlice(b("key2"), []byte("value2")))
+	assert.NoError(t, memTable.ForTestingPutSlice(b("key3"), []byte("value3")))
 
 	{
-		iter := memTable.Scan(Unbound(), Unbound())
+		iter := memTable.ForTestingScanSlice(UnboundBytes(), UnboundBytes())
 		assert.Equal(t, iter.IsValid(), true)
 		assert.Equal(t, iter.Key().KeyRef(), []byte("key1"))
 		assert.Equal(t, iter.Value(), []byte("value1"))
@@ -29,9 +29,9 @@ func TestTask1MemTableIter(t *testing.T) {
 	}
 
 	{
-		lower := Include(KeyOf([]byte("key1")))
-		upper := Include(KeyOf([]byte("key2")))
-		iter := memTable.Scan(lower, upper)
+		lower := IncludeBytes(b("key1"))
+		upper := IncludeBytes(b("key2"))
+		iter := memTable.ForTestingScanSlice(lower, upper)
 		assert.Equal(t, iter.IsValid(), true)
 		assert.Equal(t, iter.Key().KeyRef(), []byte("key1"))
 		assert.Equal(t, iter.Value(), []byte("value1"))
@@ -44,9 +44,9 @@ func TestTask1MemTableIter(t *testing.T) {
 	}
 
 	{
-		lower := Exclude(KeyOf([]byte("key1")))
-		upper := Exclude(KeyOf([]byte("key3")))
-		iter := memTable.Scan(lower, upper)
+		lower := ExcludeBytes(b("key1"))
+		upper := ExcludeBytes(b("key3"))
+		iter := memTable.ForTestingScanSlice(lower, upper)
 		assert.Equal(t, iter.IsValid(), true)
 		assert.Equal(t, iter.Key().KeyRef(), []byte("key2"))
 		assert.Equal(t, iter.Value(), []byte("value2"))
@@ -57,16 +57,16 @@ func TestTask1MemTableIter(t *testing.T) {
 
 func TestTask1EmptyMemTableIter(t *testing.T) {
 	memTable := CreateMemTable(0)
-	iter := memTable.Scan(Unbound(), Unbound())
+	iter := memTable.ForTestingScanSlice(UnboundBytes(), UnboundBytes())
 	assert.Equal(t, iter.IsValid(), false)
 
-	lower := Exclude(KeyOf([]byte("key1")))
-	upper := Exclude(KeyOf([]byte("key3")))
-	iter = memTable.Scan(lower, upper)
+	lower := ExcludeBytes(b("key1"))
+	upper := ExcludeBytes(b("key3"))
+	iter = memTable.ForTestingScanSlice(lower, upper)
 	assert.Equal(t, iter.IsValid(), false)
 
-	lower = Include(KeyOf([]byte("key1")))
-	upper = Include(KeyOf([]byte("key2")))
+	lower = IncludeBytes(b("key1"))
+	upper = IncludeBytes(b("key2"))
 	assert.Equal(t, iter.IsValid(), false)
 }
 
@@ -75,29 +75,29 @@ func TestTask2Merge1(t *testing.T) {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.1")},
-		{K: KeyOf([]byte("b")), V: []byte("2.1")},
-		{K: KeyOf([]byte("c")), V: []byte("3.1")},
-		{K: KeyOf([]byte("e")), V: []byte("")},
+		{K: StringKey("a"), V: []byte("1.1")},
+		{K: StringKey("b"), V: []byte("2.1")},
+		{K: StringKey("c"), V: []byte("3.1")},
+		{K: StringKey("e"), V: []byte("")},
 	})
 
 	i2 := NewMockIterator([]struct {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.2")},
-		{K: KeyOf([]byte("b")), V: []byte("2.2")},
-		{K: KeyOf([]byte("c")), V: []byte("3.2")},
-		{K: KeyOf([]byte("d")), V: []byte("4.2")},
+		{K: StringKey("a"), V: []byte("1.2")},
+		{K: StringKey("b"), V: []byte("2.2")},
+		{K: StringKey("c"), V: []byte("3.2")},
+		{K: StringKey("d"), V: []byte("4.2")},
 	})
 
 	i3 := NewMockIterator([]struct {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("b")), V: []byte("2.3")},
-		{K: KeyOf([]byte("c")), V: []byte("3.3")},
-		{K: KeyOf([]byte("d")), V: []byte("4.3")},
+		{K: StringKey("b"), V: []byte("2.3")},
+		{K: StringKey("c"), V: []byte("3.3")},
+		{K: StringKey("d"), V: []byte("4.3")},
 	})
 
 	iter := []StorageIterator{i1.Clone(), i2.Clone(), i3.Clone()}
@@ -106,11 +106,11 @@ func TestTask2Merge1(t *testing.T) {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.1")},
-		{K: KeyOf([]byte("b")), V: []byte("2.1")},
-		{K: KeyOf([]byte("c")), V: []byte("3.1")},
-		{K: KeyOf([]byte("d")), V: []byte("4.2")},
-		{K: KeyOf([]byte("e")), V: []byte("")},
+		{K: StringKey("a"), V: []byte("1.1")},
+		{K: StringKey("b"), V: []byte("2.1")},
+		{K: StringKey("c"), V: []byte("3.1")},
+		{K: StringKey("d"), V: []byte("4.2")},
+		{K: StringKey("e"), V: []byte("")},
 	})
 
 	iter1 := []StorageIterator{i3, i1, i2}
@@ -119,11 +119,11 @@ func TestTask2Merge1(t *testing.T) {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.1")},
-		{K: KeyOf([]byte("b")), V: []byte("2.3")},
-		{K: KeyOf([]byte("c")), V: []byte("3.3")},
-		{K: KeyOf([]byte("d")), V: []byte("4.3")},
-		{K: KeyOf([]byte("e")), V: []byte("")},
+		{K: StringKey("a"), V: []byte("1.1")},
+		{K: StringKey("b"), V: []byte("2.3")},
+		{K: StringKey("c"), V: []byte("3.3")},
+		{K: StringKey("d"), V: []byte("4.3")},
+		{K: StringKey("e"), V: []byte("")},
 	})
 
 }
@@ -133,29 +133,29 @@ func TestTask2Merge2(t *testing.T) {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.1")},
-		{K: KeyOf([]byte("b")), V: []byte("2.1")},
-		{K: KeyOf([]byte("c")), V: []byte("3.1")},
+		{K: StringKey("a"), V: []byte("1.1")},
+		{K: StringKey("b"), V: []byte("2.1")},
+		{K: StringKey("c"), V: []byte("3.1")},
 	})
 
 	i2 := NewMockIterator([]struct {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("d")), V: []byte("1.2")},
-		{K: KeyOf([]byte("e")), V: []byte("2.2")},
-		{K: KeyOf([]byte("f")), V: []byte("3.2")},
-		{K: KeyOf([]byte("g")), V: []byte("4.2")},
+		{K: StringKey("d"), V: []byte("1.2")},
+		{K: StringKey("e"), V: []byte("2.2")},
+		{K: StringKey("f"), V: []byte("3.2")},
+		{K: StringKey("g"), V: []byte("4.2")},
 	})
 
 	i3 := NewMockIterator([]struct {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("h")), V: []byte("1.3")},
-		{K: KeyOf([]byte("i")), V: []byte("2.3")},
-		{K: KeyOf([]byte("j")), V: []byte("3.3")},
-		{K: KeyOf([]byte("k")), V: []byte("4.3")},
+		{K: StringKey("h"), V: []byte("1.3")},
+		{K: StringKey("i"), V: []byte("2.3")},
+		{K: StringKey("j"), V: []byte("3.3")},
+		{K: StringKey("k"), V: []byte("4.3")},
 	})
 
 	i4 := NewMockIterator([]struct {
@@ -166,17 +166,17 @@ func TestTask2Merge2(t *testing.T) {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.1")},
-		{K: KeyOf([]byte("b")), V: []byte("2.1")},
-		{K: KeyOf([]byte("c")), V: []byte("3.1")},
-		{K: KeyOf([]byte("d")), V: []byte("1.2")},
-		{K: KeyOf([]byte("e")), V: []byte("2.2")},
-		{K: KeyOf([]byte("f")), V: []byte("3.2")},
-		{K: KeyOf([]byte("g")), V: []byte("4.2")},
-		{K: KeyOf([]byte("h")), V: []byte("1.3")},
-		{K: KeyOf([]byte("i")), V: []byte("2.3")},
-		{K: KeyOf([]byte("j")), V: []byte("3.3")},
-		{K: KeyOf([]byte("k")), V: []byte("4.3")},
+		{K: StringKey("a"), V: []byte("1.1")},
+		{K: StringKey("b"), V: []byte("2.1")},
+		{K: StringKey("c"), V: []byte("3.1")},
+		{K: StringKey("d"), V: []byte("1.2")},
+		{K: StringKey("e"), V: []byte("2.2")},
+		{K: StringKey("f"), V: []byte("3.2")},
+		{K: StringKey("g"), V: []byte("4.2")},
+		{K: StringKey("h"), V: []byte("1.3")},
+		{K: StringKey("i"), V: []byte("2.3")},
+		{K: StringKey("j"), V: []byte("3.3")},
+		{K: StringKey("k"), V: []byte("4.3")},
 	}
 	CheckIterResultByKey(t, CreateMergeIterator([]StorageIterator{i1.Clone(), i2.Clone(), i3.Clone(), i4.Clone()}), result)
 	CheckIterResultByKey(t, CreateMergeIterator([]StorageIterator{i2.Clone(), i4.Clone(), i3.Clone(), i1.Clone()}), result)
@@ -197,9 +197,9 @@ func TestTask2MergeEmpty(t *testing.T) {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.1")},
-		{K: KeyOf([]byte("b")), V: []byte("2.1")},
-		{K: KeyOf([]byte("c")), V: []byte("3.1")},
+		{K: StringKey("a"), V: []byte("1.1")},
+		{K: StringKey("b"), V: []byte("2.1")},
+		{K: StringKey("c"), V: []byte("3.1")},
 	})
 	i3 := NewMockIterator([]struct {
 		K KeyBytes
@@ -209,9 +209,9 @@ func TestTask2MergeEmpty(t *testing.T) {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.1")},
-		{K: KeyOf([]byte("b")), V: []byte("2.1")},
-		{K: KeyOf([]byte("c")), V: []byte("3.1")},
+		{K: StringKey("a"), V: []byte("1.1")},
+		{K: StringKey("b"), V: []byte("2.1")},
+		{K: StringKey("c"), V: []byte("3.1")},
 	})
 }
 
@@ -229,17 +229,17 @@ func TestTask2MergeError(t *testing.T) {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.1")},
-		{K: KeyOf([]byte("b")), V: []byte("2.1")},
-		{K: KeyOf([]byte("c")), V: []byte("3.1")},
+		{K: StringKey("a"), V: []byte("1.1")},
+		{K: StringKey("b"), V: []byte("2.1")},
+		{K: StringKey("c"), V: []byte("3.1")},
 	})
 	i3 := NewMockIteratorWithError([]struct {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.1")},
-		{K: KeyOf([]byte("b")), V: []byte("2.1")},
-		{K: KeyOf([]byte("c")), V: []byte("3.1")},
+		{K: StringKey("a"), V: []byte("1.1")},
+		{K: StringKey("b"), V: []byte("2.1")},
+		{K: StringKey("c"), V: []byte("3.1")},
 	}, 1)
 	// 这里为什么会得到一个error呢？
 	// 根据我们的实现，我们在构造MergeIterator的时候，会先把所有的iterator都放到一个heap中，然后取出最小的一个
@@ -271,8 +271,8 @@ func TestTask3FusedIterator(t *testing.T) {
 		K KeyBytes
 		V []byte
 	}{
-		{K: KeyOf([]byte("a")), V: []byte("1.1")},
-		{K: KeyOf([]byte("a")), V: []byte("2.1")},
+		{K: StringKey("a"), V: []byte("1.1")},
+		{K: StringKey("a"), V: []byte("2.1")},
 	}, 1)
 	fusedIter = CreateFusedIterator(i2)
 	assert.True(t, fusedIter.IsValid())

@@ -122,29 +122,40 @@ type CompactionOptions struct {
 func (lsm *LsmStorageInner) compactGenerateSstFromIter(iter StorageIterator, compactToBottomLevel bool) ([]*SsTable, error) {
 	var builder *SsTableBuilder = nil
 	newSst := make([]*SsTable, 0)
+	lastKey := make([]byte, 0)
 	for iter.IsValid() {
 		if builder == nil {
 			builder = NewSsTableBuilder(lsm.options.BlockSize)
 		}
-		if compactToBottomLevel {
-			if len(iter.Value()) > 0 {
-				builder.Add(iter.Key().(KeyBytes), iter.Value())
-			}
-		} else {
-			builder.Add(iter.Key().(KeyBytes), iter.Value())
-		}
-		err := iter.Next()
-		if err != nil {
-			return nil, err
-		}
-		if builder.EstimatedSize() >= int(lsm.options.TargetSstSize) {
+		sameAsLastKey := slices.Equal(iter.Key().(KeyBytes).KeyRef(), lastKey)
+		//if compactToBottomLevel {
+		//	if len(iter.Value()) > 0 {
+		//		builder.Add(iter.Key().(KeyBytes), iter.Value())
+		//	}
+		//} else {
+		//	builder.Add(iter.Key().(KeyBytes), iter.Value())
+		//}
+		// err := iter.Next()
+		//if err != nil {
+		//	return nil, err
+		//}
+		if builder.EstimatedSize() >= int(lsm.options.TargetSstSize) && !sameAsLastKey {
 			sstId := lsm.getNextSstId()
-			sst, err := builder.Build(sstId, lsm.blockCache, lsm.pathOfSst(sstId))
+			oldBuilder := builder
+			sst, err := oldBuilder.Build(sstId, lsm.blockCache, lsm.pathOfSst(sstId))
 			if err != nil {
 				return nil, err
 			}
 			newSst = append(newSst, sst)
-			builder = nil
+			builder = NewSsTableBuilder(lsm.options.BlockSize)
+		}
+		builder.Add(iter.Key().(KeyBytes), iter.Value())
+		if !sameAsLastKey {
+			lastKey = append(lastKey[:0], iter.Key().(KeyBytes).KeyRef()...)
+		}
+		err := iter.Next()
+		if err != nil {
+			return nil, err
 		}
 	}
 	if builder != nil {

@@ -263,7 +263,7 @@ func (b *BlockIterator) SeekToKey(key KeyBytes) {
 		mid := low + (high-low)/2
 		b.seekTo(mid)
 		utils.Assert(b.IsValid(), "block iterator is invalid")
-		cmp := b.key.KeyRefCompare(key)
+		cmp := b.key.Compare(key)
 		if cmp < 0 {
 			low = mid + 1
 		} else if cmp > 0 {

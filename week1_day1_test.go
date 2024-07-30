@@ -7,52 +7,52 @@ import (
 
 func TestTask1MemTableGet(t *testing.T) {
 	memTable := CreateMemTable(0)
-	err := memTable.ForTestingPutSlice(KeyOf([]byte("key1")), []byte("value1"))
+	err := memTable.ForTestingPutSlice(b("key1"), b("value1"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(KeyOf([]byte("key2")), []byte("value2"))
+	err = memTable.ForTestingPutSlice(b("key2"), []byte("value2"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(KeyOf([]byte("key3")), []byte("value3"))
+	err = memTable.ForTestingPutSlice(b("key3"), []byte("value3"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	assert.Equalf(t, memTable.ForTestingGetSlice(KeyOf([]byte("key1"))), []byte("value1"), "Expected value1, got %s", memTable.ForTestingGetSlice(KeyOf([]byte("key1"))))
-	assert.Equalf(t, memTable.ForTestingGetSlice(KeyOf([]byte("key2"))), []byte("value2"), "Expected value2, got %s", memTable.ForTestingGetSlice(KeyOf([]byte("key2"))))
-	assert.Equalf(t, memTable.ForTestingGetSlice(KeyOf([]byte("key3"))), []byte("value3"), "Expected value3, got %s", memTable.ForTestingGetSlice(KeyOf([]byte("key3"))))
+	assert.Equalf(t, memTable.ForTestingGetSlice(b("key1")), []byte("value1"), "Expected value1, got %s", memTable.ForTestingGetSlice(b("key1")))
+	assert.Equalf(t, memTable.ForTestingGetSlice(b("key2")), []byte("value2"), "Expected value2, got %s", memTable.ForTestingGetSlice(b("key2")))
+	assert.Equalf(t, memTable.ForTestingGetSlice(b("key3")), []byte("value3"), "Expected value3, got %s", memTable.ForTestingGetSlice(b("key3")))
 }
 
 func TestTask1MemTableOverwrite(t *testing.T) {
 	memTable := CreateMemTable(0)
-	err := memTable.ForTestingPutSlice(KeyOf([]byte("key1")), []byte("value1"))
+	err := memTable.ForTestingPutSlice(b("key1"), []byte("value1"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(KeyOf([]byte("key2")), []byte("value2"))
+	err = memTable.ForTestingPutSlice(b("key2"), []byte("value2"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(KeyOf([]byte("key3")), []byte("value3"))
+	err = memTable.ForTestingPutSlice(b("key3"), []byte("value3"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(KeyOf([]byte("key1")), []byte("value11"))
+	err = memTable.ForTestingPutSlice(b("key1"), []byte("value11"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(KeyOf([]byte("key2")), []byte("value22"))
+	err = memTable.ForTestingPutSlice(b("key2"), []byte("value22"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	err = memTable.ForTestingPutSlice(KeyOf([]byte("key3")), []byte("value33"))
+	err = memTable.ForTestingPutSlice(b("key3"), []byte("value33"))
 	if err != nil {
 		t.Errorf("Put error: %v", err)
 	}
-	assert.Equal(t, memTable.ForTestingGetSlice(KeyOf([]byte("key1"))), []byte("value11"))
-	assert.Equal(t, memTable.ForTestingGetSlice(KeyOf([]byte("key2"))), []byte("value22"))
-	assert.Equal(t, memTable.ForTestingGetSlice(KeyOf([]byte("key3"))), []byte("value33"))
+	assert.Equal(t, memTable.ForTestingGetSlice(b("key1")), []byte("value11"))
+	assert.Equal(t, memTable.ForTestingGetSlice(b("key2")), []byte("value22"))
+	assert.Equal(t, memTable.ForTestingGetSlice(b("key3")), []byte("value33"))
 }
 
 func TestTask2StorageIntegration(t *testing.T) {
