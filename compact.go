@@ -122,23 +122,67 @@ type CompactionOptions struct {
 func (lsm *LsmStorageInner) compactGenerateSstFromIter(iter StorageIterator, compactToBottomLevel bool) ([]*SsTable, error) {
 	var builder *SsTableBuilder = nil
 	newSst := make([]*SsTable, 0)
+	watermark := lsm.Mvcc().Watermark()
 	lastKey := make([]byte, 0)
+	// 这个参数的作用是记录一个key如果有多个版本，那么他的最新版本是不是在watermark之下，如果是，也是要保留的
+	firstKeyBelowWatermark := false
 	for iter.IsValid() {
 		if builder == nil {
 			builder = NewSsTableBuilder(lsm.options.BlockSize)
 		}
 		sameAsLastKey := slices.Equal(iter.Key().(KeyBytes).KeyRef(), lastKey)
-		//if compactToBottomLevel {
-		//	if len(iter.Value()) > 0 {
-		//		builder.Add(iter.Key().(KeyBytes), iter.Value())
-		//	}
-		//} else {
-		//	builder.Add(iter.Key().(KeyBytes), iter.Value())
-		//}
-		// err := iter.Next()
-		//if err != nil {
-		//	return nil, err
-		//}
+		if !sameAsLastKey {
+			firstKeyBelowWatermark = true
+		}
+		//Now that we have a watermark for the system, we can clean up unused versions during the compaction process.
+		//
+		//	If a version of a key is above watermark, keep it.
+		//	For all versions of a key below or equal to the watermark, keep the latest version.
+		//	For example, if we have watermark=3 and the following data:
+		//
+		//
+		//a@4=del <- above watermark
+		//a@3=3   <- latest version below or equal to watermark
+		//a@2=2   <- can be removed, no one will read it
+		//a@1=1   <- can be removed, no one will read it
+		//b@1=1   <- latest version below or equal to watermark
+		//c@4=4   <- above watermark
+		//d@3=del <- can be removed if compacting to bottom-most level
+		//d@2=2   <- can be removed
+		//If we do a compaction over these keys, we will get:
+		//
+		//a@4=del
+		//a@3=3
+		//b@1=1
+		//c@4=4
+		//d@3=del (can be removed if compacting to bottom-most level)
+		//Assume these are all keys in the engine. If we do a scan at ts=3, we will get a=3,b=1,c=4
+		//before/after compaction. If we do a scan at ts=4, we will get b=1,c=4 before/after compaction.
+		//Compaction will not and should not affect transactions with read timestamp >= watermark.
+		// 这个条件就是如果这个key是删除操作，且他的ts小于watermark, 而且compactToBottomLevel，则可以直接丢弃这个key了
+		if compactToBottomLevel &&
+			!sameAsLastKey &&
+			iter.Key().(KeyBytes).Ts <= watermark &&
+			len(iter.Value()) == 0 {
+			lastKey = append(lastKey[:0], iter.Key().(KeyBytes).KeyRef()...)
+			err := iter.Next()
+			if err != nil {
+				return nil, err
+			}
+			firstKeyBelowWatermark = false
+			continue
+		}
+
+		if sameAsLastKey && iter.Key().(KeyBytes).Ts <= watermark {
+			if !firstKeyBelowWatermark {
+				err := iter.Next()
+				if err != nil {
+					return nil, err
+				}
+				continue
+			}
+			firstKeyBelowWatermark = false
+		}
 		if builder.EstimatedSize() >= int(lsm.options.TargetSstSize) && !sameAsLastKey {
 			sstId := lsm.getNextSstId()
 			oldBuilder := builder

@@ -52,6 +52,7 @@ func (l *LsmMvccInner) NewTxn(inner *LsmStorageInner, serializable bool) *Transa
 	l.TsLock.Lock()
 	defer l.TsLock.Unlock()
 	readTs := l.Ts.First
+	l.Ts.Second.AddReader(readTs)
 	res := &Transaction{
 		ReadTs:       readTs,
 		Inner:        inner,

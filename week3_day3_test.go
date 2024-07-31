@@ -221,6 +221,12 @@ func TestTask2LsmIteratorMvcc(t *testing.T) {
 	//PrintIter(iter)
 	CheckLsmIterResultByKey1(t, iter, []StringKeyValuePair{})
 
+	snapshot1.RemoveReader()
+	snapshot2.RemoveReader()
+	snapshot3.RemoveReader()
+	snapshot4.RemoveReader()
+	snapshot5.RemoveReader()
+	snapshot6.RemoveReader()
 	assert.NoError(t, storage.Shutdown())
 }
 

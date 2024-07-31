@@ -31,6 +31,17 @@ func (t *Transaction) Delete(key []byte) {
 	panic("implement me")
 }
 
+func (t *Transaction) RemoveReader() {
+	t.Inner.Mvcc().TsLock.Lock()
+	defer t.Inner.Mvcc().TsLock.Unlock()
+	ts := t.Inner.Mvcc().Ts
+	ts.Second.RemoveReader(t.ReadTs)
+}
+
+func (t *Transaction) End() {
+	t.RemoveReader()
+}
+
 func (t *Transaction) Scan(start BytesBound, end BytesBound) (*TxnIterator, error) {
 	iterator, err := t.Inner.ScanWithTs(start, end, t.ReadTs)
 	if err != nil {
