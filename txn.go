@@ -19,8 +19,8 @@ func (t *Transaction) Commit() error {
 	panic("implement me")
 }
 
-func (t *Transaction) Get(key []byte) ([]byte, bool, error) {
-	panic("implement me")
+func (t *Transaction) Get(key []byte) ([]byte, error) {
+	return t.Inner.GetWithTs(key, t.ReadTs)
 }
 
 func (t *Transaction) Put(key []byte, value []byte) {
@@ -31,8 +31,12 @@ func (t *Transaction) Delete(key []byte) {
 	panic("implement me")
 }
 
-func (t *Transaction) Scan(start []byte, end []byte) (*TxnIterator, error) {
-	panic("implement me")
+func (t *Transaction) Scan(start BytesBound, end BytesBound) (*TxnIterator, error) {
+	iterator, err := t.Inner.ScanWithTs(start, end, t.ReadTs)
+	if err != nil {
+		return nil, err
+	}
+	return CreateTxnIterator(t, iterator)
 }
 
 type TxnLocalIterator struct {
@@ -64,15 +68,18 @@ func (t *TxnLocalIterator) NumActiveIterators() int {
 
 type TxnIterator struct {
 	txn  *Transaction
-	iter *TwoMergeIterator
+	iter *FusedIterator
 }
 
-func CreateTxnIterator(txn *Transaction, iter *TwoMergeIterator) *TxnIterator {
-	panic("implement me")
+func CreateTxnIterator(txn *Transaction, iter *FusedIterator) (*TxnIterator, error) {
+	if _, ok := iter.iter.(*LsmIterator); !ok {
+		panic("iter should be LsmIterator")
+	}
+	return &TxnIterator{txn: txn, iter: iter}, nil
 }
 
 func (t *TxnIterator) Next() error {
-	panic("implement me")
+	return t.iter.Next()
 }
 
 func (t *TxnIterator) IsValid() bool {

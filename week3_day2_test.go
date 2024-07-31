@@ -15,7 +15,8 @@ func TestTask3CompactionIntegration(t *testing.T) {
 	})
 	options.EnableWal = true
 	storage := utils.Unwrap(Open(dir, options))
-	_ = storage.NewTxn()
+	// TODO 事务提交
+	_, _ = storage.NewTxn()
 	for i := 0; i <= 20000; i++ {
 		assert.NoError(t, storage.Put(b("0"), b(fmt.Sprintf("%02000d", i))))
 	}

@@ -33,3 +33,10 @@ func MaxU32(a, b uint32) uint32 {
 	}
 	return b
 }
+
+func MaxU64(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
+}

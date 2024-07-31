@@ -11,16 +11,18 @@ type LsmIteratorInner = TwoMergeIterator
 
 type LsmIterator struct {
 	inner    *LsmIteratorInner
-	endBound KeyBound
+	endBound BytesBound
 	isValid  bool
+	readTs   uint64
 	prevKey  []byte
 }
 
-func CreateLsmIterator(iter *LsmIteratorInner, endBound KeyBound) (*LsmIterator, error) {
+func CreateLsmIterator(iter *LsmIteratorInner, endBound BytesBound, readTs uint64) (*LsmIterator, error) {
 	l := &LsmIterator{
 		inner:    iter,
 		isValid:  iter.IsValid(),
 		endBound: endBound,
+		readTs:   readTs,
 		prevKey:  make([]byte, 0),
 	}
 	err := l.moveToKey()
@@ -49,7 +51,7 @@ func CreateLsmIterator(iter *LsmIteratorInner, endBound KeyBound) (*LsmIterator,
 func (l *LsmIterator) moveToKey() error {
 	// 这个函数的作用是迭代掉所有相同的key(ts 不同)
 	for {
-		for l.IsValid() && bytes.Compare(l.inner.Key().KeyRef(), l.prevKey) == 0 {
+		for l.inner.IsValid() && bytes.Compare(l.inner.Key().KeyRef(), l.prevKey) == 0 {
 			err := l.nextInner()
 			if err != nil {
 				return err
@@ -59,6 +61,20 @@ func (l *LsmIterator) moveToKey() error {
 			break
 		}
 		l.prevKey = append(l.prevKey[:0], l.inner.Key().KeyRef()...)
+		for l.inner.IsValid() &&
+			bytes.Compare(l.inner.Key().KeyRef(), l.prevKey) == 0 &&
+			l.inner.Key().(KeyBytes).Ts > l.readTs {
+			err := l.nextInner()
+			if err != nil {
+				return err
+			}
+		}
+		if !l.inner.IsValid() {
+			break
+		}
+		if bytes.Compare(l.inner.Key().KeyRef(), l.prevKey) != 0 {
+			continue
+		}
 		if len(l.inner.Value()) != 0 {
 			break
 		}
@@ -79,9 +95,12 @@ func (l *LsmIterator) nextInner() error {
 		// 这里为什么只比较key，而不比较ts，因为lsmIterator已经是比较外层的接口了，他的endBound只是一个[]byte
 		// 而根据我们的定义，("a", 233) < ("a", 0) < ("b", 235)
 		// 如果是include,那么我们其实找到的第一个key就是最新的key,而exclude则要完全跳过这个key，不管ts是多少
-		l.isValid = l.inner.Key().KeyRefCompare(l.endBound.Val) <= 0
+		//l.isValid = l.inner.Key().KeyRefCompare(l.endBound.Val) <= 0
+		l.isValid = bytes.Compare(l.inner.Key().KeyRef(), l.endBound.Val) <= 0
 	} else if l.endBound.Type == Excluded {
-		l.isValid = l.inner.Key().KeyRefCompare(l.endBound.Val) < 0
+		// l.isValid = l.inner.Key().KeyRefCompare(l.endBound.Val) < 0
+		// println("========>>>>", string(l.inner.Key().KeyRef()), string(l.endBound.Val))
+		l.isValid = bytes.Compare(l.inner.Key().KeyRef(), l.endBound.Val) < 0
 	}
 	return nil
 }

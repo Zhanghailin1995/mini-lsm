@@ -107,11 +107,11 @@ func (lsm *MiniLsm) Delete(key []byte) error {
 	return lsm.inner.Delete(key)
 }
 
-func (lsm *MiniLsm) Scan(lower, upper BytesBound) (*FusedIterator, error) {
+func (lsm *MiniLsm) Scan(lower, upper BytesBound) (*TxnIterator, error) {
 	return lsm.inner.Scan(lower, upper)
 }
 
-func (lsm *MiniLsm) NewTxn() error {
+func (lsm *MiniLsm) NewTxn() (*Transaction, error) {
 	return lsm.inner.NewTxn()
 }
 
@@ -355,6 +355,7 @@ func OpenLsmStorageInner(p string, options *LsmStorageOptions) (*LsmStorageInner
 	var createManifestErr error
 	var nextSstId uint32 = 1
 	manifestPath := path.Join(p, "MANIFEST")
+	lastCommitTs := uint64(0)
 	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
 		// 创建manifest文件
 		if options.EnableWal {
@@ -415,6 +416,7 @@ func OpenLsmStorageInner(p string, options *LsmStorageOptions) (*LsmStorageInner
 			if err != nil {
 				return nil, err
 			}
+			lastCommitTs = utils.MaxU64(lastCommitTs, sst.MaxTs())
 			state.sstables[id] = sst
 			sstCnt++
 		}
@@ -433,6 +435,8 @@ func OpenLsmStorageInner(p string, options *LsmStorageOptions) (*LsmStorageInner
 				if err != nil {
 					return nil, err
 				}
+				maxTs := memtable.MaxTs()
+				lastCommitTs = utils.MaxU64(lastCommitTs, maxTs)
 				if !memtable.IsEmpty() {
 					state.immMemTable = append([]*MemTable{memtable}, state.immMemTable...)
 					walCnt++
@@ -469,7 +473,7 @@ func OpenLsmStorageInner(p string, options *LsmStorageOptions) (*LsmStorageInner
 		compactionController: cc,
 		options:              options,
 		manifest:             manifest,
-		mvcc:                 NewLsmMvccInner(0),
+		mvcc:                 NewLsmMvccInner(lastCommitTs),
 	}
 	err = storage.SyncDir()
 	if err != nil {
@@ -482,8 +486,8 @@ func (lsm *LsmStorageInner) Mvcc() *LsmMvccInner {
 	return lsm.mvcc
 }
 
-func (lsm *LsmStorageInner) NewTxn() error {
-	return nil
+func (lsm *LsmStorageInner) NewTxn() (*Transaction, error) {
+	return lsm.Mvcc().NewTxn(lsm, lsm.options.Serializable), nil
 }
 
 func (lsm *LsmStorageInner) Manifest() *Manifest {
@@ -692,6 +696,11 @@ func keyWithin(userKey []byte, tableBegin, tableEnd KeyBytes) bool {
 }
 
 func (lsm *LsmStorageInner) Get(k []byte) ([]byte, error) {
+	txn := lsm.Mvcc().NewTxn(lsm, lsm.options.Serializable)
+	return txn.Get(k)
+}
+
+func (lsm *LsmStorageInner) GetWithTs(k []byte, readTs uint64) ([]byte, error) {
 	lsm.rwLock.RLock()
 	snapshot := lsm.state
 	lsm.rwLock.RUnlock()
@@ -763,7 +772,7 @@ func (lsm *LsmStorageInner) Get(k []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	lsmIter, err := CreateLsmIterator(iterator, Unbound())
+	lsmIter, err := CreateLsmIterator(iterator, UnboundBytes(), readTs)
 	if err != nil {
 		return nil, err
 	}
@@ -885,7 +894,12 @@ func rangeOverlap(userBegin, userEnd BytesBound, tableBegin, tableEnd KeyBytes) 
 	return true
 }
 
-func (lsm *LsmStorageInner) Scan(lower, upper BytesBound) (*FusedIterator, error) {
+func (lsm *LsmStorageInner) Scan(lower, upper BytesBound) (*TxnIterator, error) {
+	txn := lsm.Mvcc().NewTxn(lsm, lsm.options.Serializable)
+	return txn.Scan(lower, upper)
+}
+
+func (lsm *LsmStorageInner) ScanWithTs(lower, upper BytesBound, readTs uint64) (*FusedIterator, error) {
 	// 才用写时复制的策略，避免一直持有锁
 	lsm.rwLock.RLock()
 	snapshot := lsm.state
@@ -916,7 +930,7 @@ func (lsm *LsmStorageInner) Scan(lower, upper BytesBound) (*FusedIterator, error
 				if err != nil {
 					return nil, err
 				}
-				if sstableIter.IsValid() && bytes.Compare(sstableIter.Key().KeyRef(), lower.Val) == 0 {
+				for sstableIter.IsValid() && bytes.Compare(sstableIter.Key().KeyRef(), lower.Val) == 0 {
 					err := sstableIter.Next()
 					if err != nil {
 						return nil, err
@@ -954,7 +968,7 @@ func (lsm *LsmStorageInner) Scan(lower, upper BytesBound) (*FusedIterator, error
 			if err != nil {
 				return nil, err
 			}
-			if levelIter.IsValid() && bytes.Compare(levelIter.Key().KeyRef(), lower.Val) == 0 {
+			for levelIter.IsValid() && bytes.Compare(levelIter.Key().KeyRef(), lower.Val) == 0 {
 				err := levelIter.Next()
 				if err != nil {
 					return nil, err
@@ -985,10 +999,10 @@ func (lsm *LsmStorageInner) Scan(lower, upper BytesBound) (*FusedIterator, error
 		return nil, err
 	}
 
-	lsmIterator, err := CreateLsmIterator(lsmIteratorInner, MapBound(upper))
+	lsmIterator, err := CreateLsmIterator(lsmIteratorInner, upper, readTs)
 	if err != nil {
 		return nil, err
 	}
-	//PrintIter(lsmIterator)
+	// PrintIter(lsmIterator)
 	return CreateFusedIterator(lsmIterator), nil
 }

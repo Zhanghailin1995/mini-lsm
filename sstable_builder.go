@@ -15,6 +15,7 @@ type SsTableBuilder struct {
 	meta         []*BlockMeta
 	blockSize    uint32
 	keyHashes    []uint32
+	maxTs        uint64
 }
 
 func NewSsTableBuilder(blockSize uint32) *SsTableBuilder {
@@ -26,12 +27,16 @@ func NewSsTableBuilder(blockSize uint32) *SsTableBuilder {
 		meta:         make([]*BlockMeta, 0),
 		blockSize:    blockSize,
 		keyHashes:    make([]uint32, 0),
+		maxTs:        uint64(0),
 	}
 }
 
 func (s *SsTableBuilder) Add(key KeyBytes, value []byte) {
 	if len(s.firstKey.Val) == 0 {
 		s.firstKey = key.Clone()
+	}
+	if key.Ts > s.maxTs {
+		s.maxTs = key.Ts
 	}
 	s.keyHashes = append(s.keyHashes, farm.Fingerprint32(key.Val))
 	if s.blockBuilder.Add(key, value) {
@@ -71,18 +76,23 @@ func (s *SsTableBuilder) Build(id uint32, blockCache *BlockCache, path string) (
 	s.finishBlock()
 	buf := s.data
 	metaOffset := len(buf)
-	buf = EncodeBlockMeta(s.meta, buf)
+	//println("metaOffset: ", metaOffset)
+	//println("meta size: ", len(s.meta))
+	buf = EncodeBlockMeta(s.meta, s.maxTs, buf)
+	//println("buf size: ", len(buf))
 	// put 32 into buf
 	buffer := bytes.NewBuffer(buf)
 	//buffer.Grow(4) // u32
 	utils.UnwrapError(binary.Write(buffer, binary.BigEndian, uint32(metaOffset)))
 
 	bloom := BuildFromKeyHashes(s.keyHashes, BloomBitsPerKey(uint32(len(s.keyHashes)), 0.01))
+	//println("bloom size: ", len(bloom.filter))
 	bloomOffset := buffer.Len()
 	bloom.EncodeBuffer(buffer)
 	utils.UnwrapError(binary.Write(buffer, binary.BigEndian, uint32(bloomOffset)))
 
 	buf = buffer.Bytes()
+	//println("buf size: ", len(buf))
 	file, err := CreateFileObject(path, buf)
 	if err != nil {
 		return nil, err
@@ -96,7 +106,7 @@ func (s *SsTableBuilder) Build(id uint32, blockCache *BlockCache, path string) (
 		blockMeta:       s.meta,
 		blockMetaOffset: uint32(metaOffset),
 		bloom:           bloom,
-		maxTs:           0,
+		maxTs:           s.maxTs,
 	}, nil
 }
 

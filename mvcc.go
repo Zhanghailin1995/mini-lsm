@@ -1,6 +1,9 @@
 package mini_lsm
 
-import "sync"
+import (
+	"github.com/huandu/skiplist"
+	"sync"
+)
 
 type CommittedTxnData struct {
 	KeyHashes map[uint32]struct{}
@@ -45,6 +48,16 @@ func (l *LsmMvccInner) Watermark() uint64 {
 	}
 }
 
-func (l *LsmMvccInner) NewTxn(inner *LsmStorageInner, serializable bool) {
-	panic("implement me")
+func (l *LsmMvccInner) NewTxn(inner *LsmStorageInner, serializable bool) *Transaction {
+	l.TsLock.Lock()
+	defer l.TsLock.Unlock()
+	readTs := l.Ts.First
+	res := &Transaction{
+		ReadTs:       readTs,
+		Inner:        inner,
+		LocalStorage: skiplist.New(skiplist.Bytes),
+		KeyHashes:    nil,
+	}
+	res.committed.Store(false)
+	return res
 }

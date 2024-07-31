@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
 	"os"
+	"slices"
 	"sync"
 	"unsafe"
 )
@@ -16,7 +17,8 @@ type BlockMeta struct {
 	lastKey  KeyBytes
 }
 
-func EncodeBlockMeta(blockMeta []*BlockMeta, buf []byte) []byte {
+func EncodeBlockMeta(blockMeta []*BlockMeta, maxTs uint64, buf []byte) []byte {
+	// the size of the block meta
 	estimatedSize := 4
 	for _, bm := range blockMeta {
 		// the size of the offset
@@ -24,13 +26,15 @@ func EncodeBlockMeta(blockMeta []*BlockMeta, buf []byte) []byte {
 		// the size of the first key len
 		estimatedSize += int(unsafe.Sizeof(uint16(0)))
 		// the size of the first key
-		estimatedSize += len(bm.firstKey.Val)
+		estimatedSize += bm.firstKey.RawLen()
 		// the size of the last key len
 		estimatedSize += int(unsafe.Sizeof(uint16(0)))
 		// the size of the last key
-		estimatedSize += len(bm.lastKey.Val)
+		estimatedSize += bm.lastKey.RawLen()
 	}
-	estimatedSize += 4
+	estimatedSize += 8 // maxTs
+	estimatedSize += 4 // crc32
+	//println("estimated size", estimatedSize)
 	// ensure the buf has enough space
 	originalLen := len(buf)
 	buffer := bytes.NewBuffer(buf)
@@ -40,9 +44,12 @@ func EncodeBlockMeta(blockMeta []*BlockMeta, buf []byte) []byte {
 		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, bm.offset))
 		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint16(len(bm.firstKey.Val))))
 		buffer.Write(bm.firstKey.Val)
+		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, bm.firstKey.Ts))
 		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint16(len(bm.lastKey.Val))))
 		buffer.Write(bm.lastKey.Val)
+		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, bm.lastKey.Ts))
 	}
+	utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, maxTs))
 	tmp := buffer.Bytes()
 	checksum := utils.Crc32(tmp[originalLen+4:])
 	utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, checksum))
@@ -50,7 +57,7 @@ func EncodeBlockMeta(blockMeta []*BlockMeta, buf []byte) []byte {
 	return buffer.Bytes()
 }
 
-func DecodeBlockMeta(data []byte) []*BlockMeta {
+func DecodeBlockMeta(data []byte) ([]*BlockMeta, uint64) {
 	var blockMeta []*BlockMeta
 	num := binary.BigEndian.Uint32(data)
 	data = data[4:]
@@ -62,20 +69,25 @@ func DecodeBlockMeta(data []byte) []*BlockMeta {
 		data = data[2:]
 		firstKey := utils.Copy(data[:firstKeyLen])
 		data = data[firstKeyLen:]
+		firstKeyTs := binary.BigEndian.Uint64(data[firstKeyLen:])
+		data = data[8:]
 		lastKeyLen := binary.BigEndian.Uint16(data)
 		data = data[2:]
 		lastKey := utils.Copy(data[:lastKeyLen])
 		data = data[lastKeyLen:]
+		lastKeyTs := binary.BigEndian.Uint64(data[lastKeyLen:])
+		data = data[8:]
 		blockMeta = append(blockMeta, &BlockMeta{
 			offset:   offset,
-			firstKey: KeyBytes{Val: firstKey},
-			lastKey:  KeyBytes{Val: lastKey},
+			firstKey: KeyFromBytesWithTs(slices.Clone(firstKey), firstKeyTs),
+			lastKey:  KeyFromBytesWithTs(slices.Clone(lastKey), lastKeyTs),
 		})
 	}
+	maxTs := binary.BigEndian.Uint64(data)
 	if checksum != binary.BigEndian.Uint32(data) {
 		panic("decode block meta checksum error")
 	}
-	return blockMeta
+	return blockMeta, maxTs
 }
 
 type FileObject struct {
@@ -253,7 +265,7 @@ func OpenSsTable(id uint32, blockCache *BlockCache, file *FileObject) (*SsTable,
 	if err != nil {
 		return nil, err
 	}
-	blockMeta := DecodeBlockMeta(rawMeta)
+	blockMeta, maxTs := DecodeBlockMeta(rawMeta)
 
 	firstKey := blockMeta[0].firstKey.Clone()
 	lastKey := blockMeta[len(blockMeta)-1].lastKey.Clone()
@@ -266,7 +278,7 @@ func OpenSsTable(id uint32, blockCache *BlockCache, file *FileObject) (*SsTable,
 		blockMetaOffset: blockMetaOffset,
 		blockCache:      blockCache,
 		bloom:           bloom,
-		maxTs:           0,
+		maxTs:           maxTs,
 	}, nil
 }
 

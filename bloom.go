@@ -2,6 +2,7 @@ package mini_lsm
 
 import (
 	"bytes"
+	"encoding/binary"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
 	"math"
 )
@@ -32,8 +33,12 @@ func BitLen(b []byte) uint32 {
 }
 
 func DecodeBloom(buf []byte) *Bloom {
-	filter := buf[:len(buf)-1]
-	k := buf[len(buf)-1]
+	checksum := binary.BigEndian.Uint32(buf[len(buf)-4:])
+	if utils.Crc32(buf[:len(buf)-4]) != checksum {
+		panic("bloom decode checksum error")
+	}
+	filter := buf[:len(buf)-5]
+	k := buf[len(buf)-5]
 	return &Bloom{
 		filter: utils.Copy(filter),
 		k:      k,
@@ -47,8 +52,15 @@ func (b *Bloom) Encode(buf []byte) []byte {
 }
 
 func (b *Bloom) EncodeBuffer(buf *bytes.Buffer) {
+	offset := buf.Len()
 	buf.Write(b.filter)
 	buf.WriteByte(b.k)
+	content := buf.Bytes()[offset:]
+	checksum := utils.Crc32(content)
+	err := binary.Write(buf, binary.BigEndian, checksum)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func BloomBitsPerKey(entries uint32, falsePositiveRate float64) uint32 {

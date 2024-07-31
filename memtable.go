@@ -58,6 +58,20 @@ func RecoverFromWal(id uint32, p string) (*MemTable, error) {
 	return m, nil
 }
 
+func (m *MemTable) MaxTs() uint64 {
+	ele := m.skipMap.Front()
+	if ele == nil {
+		return TsDefault
+	} else {
+		maxTs := ele.Key().(KeyBytes).Ts
+		for ele.Next() != nil {
+			ele = ele.Next()
+			maxTs = utils.MaxU64(maxTs, ele.Key().(KeyBytes).Ts)
+		}
+		return maxTs
+	}
+}
+
 func (m *MemTable) Close() error {
 	if m.wal != nil {
 		return m.wal.Close()
@@ -133,6 +147,8 @@ func (m *MemTable) ForTestingGetSlice(key []byte) []byte {
 }
 
 func (m *MemTable) IsEmpty() bool {
+	m.rwLock.RLock()
+	defer m.rwLock.RUnlock()
 	return m.skipMap.Len() == 0
 }
 
