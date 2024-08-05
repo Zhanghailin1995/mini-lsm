@@ -6,7 +6,6 @@ import (
 	"errors"
 	"github.com/Zhanghailin1995/mini-lsm/utils"
 	"os"
-	"slices"
 	"sync"
 	"unsafe"
 )
@@ -39,17 +38,18 @@ func EncodeBlockMeta(blockMeta []*BlockMeta, maxTs uint64, buf []byte) []byte {
 	originalLen := len(buf)
 	buffer := bytes.NewBuffer(buf)
 	buffer.Grow(estimatedSize)
-	utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint32(len(blockMeta))))
+	utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint32(len(blockMeta)))) // block meta num
 	for _, bm := range blockMeta {
-		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, bm.offset))
-		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint16(len(bm.firstKey.Val))))
-		buffer.Write(bm.firstKey.Val)
-		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, bm.firstKey.Ts))
-		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint16(len(bm.lastKey.Val))))
-		buffer.Write(bm.lastKey.Val)
-		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, bm.lastKey.Ts))
+		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, bm.offset))                    // offset
+		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint16(len(bm.firstKey.Val)))) // first key len
+		buffer.Write(bm.firstKey.Val)                                                            // first key
+		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, bm.firstKey.Ts))               // first key ts
+		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, uint16(len(bm.lastKey.Val))))  // last key len
+		buffer.Write(bm.lastKey.Val)                                                             // last key
+		utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, bm.lastKey.Ts))                // last key ts
+		//println(bm.offset, len(bm.firstKey.Val), string(bm.firstKey.Val), bm.firstKey.Ts, len(bm.lastKey.Val), string(bm.lastKey.Val), bm.lastKey.Ts)
 	}
-	utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, maxTs))
+	utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, maxTs)) // maxTs
 	tmp := buffer.Bytes()
 	checksum := utils.Crc32(tmp[originalLen+4:])
 	utils.ErrorWrapper(binary.Write(buffer, binary.BigEndian, checksum))
@@ -63,27 +63,36 @@ func DecodeBlockMeta(data []byte) ([]*BlockMeta, uint64) {
 	data = data[4:]
 	checksum := utils.Crc32(data[:len(data)-4])
 	for i := 0; i < int(num); i++ {
+
 		offset := binary.BigEndian.Uint32(data)
 		data = data[4:]
+
 		firstKeyLen := binary.BigEndian.Uint16(data)
 		data = data[2:]
+
 		firstKey := utils.Copy(data[:firstKeyLen])
 		data = data[firstKeyLen:]
-		firstKeyTs := binary.BigEndian.Uint64(data[firstKeyLen:])
+
+		firstKeyTs := binary.BigEndian.Uint64(data)
 		data = data[8:]
+
 		lastKeyLen := binary.BigEndian.Uint16(data)
 		data = data[2:]
+
 		lastKey := utils.Copy(data[:lastKeyLen])
 		data = data[lastKeyLen:]
-		lastKeyTs := binary.BigEndian.Uint64(data[lastKeyLen:])
+
+		lastKeyTs := binary.BigEndian.Uint64(data)
 		data = data[8:]
+		//println(i, offset, firstKeyLen, string(firstKey), firstKeyTs, lastKeyLen, string(lastKey), lastKeyTs)
 		blockMeta = append(blockMeta, &BlockMeta{
 			offset:   offset,
-			firstKey: KeyFromBytesWithTs(slices.Clone(firstKey), firstKeyTs),
-			lastKey:  KeyFromBytesWithTs(slices.Clone(lastKey), lastKeyTs),
+			firstKey: KeyFromBytesWithTs(firstKey, firstKeyTs),
+			lastKey:  KeyFromBytesWithTs(lastKey, lastKeyTs),
 		})
 	}
 	maxTs := binary.BigEndian.Uint64(data)
+	data = data[8:]
 	if checksum != binary.BigEndian.Uint32(data) {
 		panic("decode block meta checksum error")
 	}

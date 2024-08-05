@@ -2,6 +2,7 @@ package mini_lsm
 
 import (
 	"github.com/huandu/skiplist"
+	"github.com/tidwall/btree"
 	"sync"
 )
 
@@ -13,16 +14,17 @@ type CommittedTxnData struct {
 
 type LsmMvccInner struct {
 	WriteLock         sync.Mutex
+	CommitLock        sync.Mutex
 	TsLock            sync.Mutex
 	Ts                *Tuple[uint64, *Watermark]
 	CommittedTxnsLock sync.Mutex
-	CommittedTxns     map[uint64]*CommittedTxnData
+	CommittedTxns     *btree.Map[uint64, *CommittedTxnData]
 }
 
 func NewLsmMvccInner(initTs uint64) *LsmMvccInner {
 	return &LsmMvccInner{
 		Ts:            &Tuple[uint64, *Watermark]{initTs, NewWaterMark()},
-		CommittedTxns: make(map[uint64]*CommittedTxnData),
+		CommittedTxns: btree.NewMap[uint64, *CommittedTxnData](2),
 	}
 }
 
@@ -53,11 +55,17 @@ func (l *LsmMvccInner) NewTxn(inner *LsmStorageInner, serializable bool) *Transa
 	defer l.TsLock.Unlock()
 	readTs := l.Ts.First
 	l.Ts.Second.AddReader(readTs)
+	var keyHashes *Tuple[map[uint32]struct{}, map[uint32]struct{}]
+	if serializable {
+		keyHashes = &Tuple[map[uint32]struct{}, map[uint32]struct{}]{make(map[uint32]struct{}), make(map[uint32]struct{})}
+	} else {
+		keyHashes = nil
+	}
 	res := &Transaction{
 		ReadTs:       readTs,
 		Inner:        inner,
 		LocalStorage: skiplist.New(skiplist.Bytes),
-		KeyHashes:    nil,
+		KeyHashes:    keyHashes,
 	}
 	res.committed.Store(false)
 	return res

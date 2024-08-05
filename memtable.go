@@ -80,7 +80,7 @@ func (m *MemTable) Close() error {
 }
 
 func (m *MemTable) Put(key KeyBytes, value []byte) error {
-	estimatedSize := uint32(len(key.Val) + len(value))
+	estimatedSize := uint32(key.RawLen() + len(value))
 	m.rwLock.Lock()
 	m.skipMap.Set(key.Clone(), slices.Clone(value))
 	m.rwLock.Unlock()
@@ -114,13 +114,13 @@ func (m *MemTable) SyncWal() error {
 func (m *MemTable) Scan(lower, upper KeyBound) *MemTableIterator {
 	m.rwLock.RLock()
 	defer m.rwLock.RUnlock()
-	return CreateMemTableIterator(m.skipMap, lower, upper)
+	return CreateMemTableIterator(m, lower, upper)
 }
 
 func (m *MemTable) ForTestingScanSlice(lower, upper BytesBound) *MemTableIterator {
 	m.rwLock.RLock()
 	defer m.rwLock.RUnlock()
-	return CreateMemTableIterator(m.skipMap, MapKeyBoundPlusTs(lower, TsDefault), MapKeyBoundPlusTs(upper, TsDefault))
+	return CreateMemTableIterator(m, MapKeyBoundPlusTs(lower, TsDefault), MapKeyBoundPlusTs(upper, TsDefault))
 }
 
 func (m *MemTable) Flush(builder *SsTableBuilder) error {
@@ -153,13 +153,14 @@ func (m *MemTable) IsEmpty() bool {
 }
 
 type MemTableIterator struct {
+	memtable     *MemTable
 	ele          *skiplist.Element
 	upper        KeyBound
 	currentKey   KeyBytes
 	currentValue []byte
 }
 
-func newMemTableIterator(ele *skiplist.Element, upper KeyBound) *MemTableIterator {
+func newMemTableIterator(memtable *MemTable, ele *skiplist.Element, upper KeyBound) *MemTableIterator {
 	var k KeyBytes
 	var v []byte
 	if ele != nil {
@@ -170,6 +171,7 @@ func newMemTableIterator(ele *skiplist.Element, upper KeyBound) *MemTableIterato
 		v = nil
 	}
 	m := &MemTableIterator{
+		memtable:     memtable,
 		ele:          ele,
 		upper:        upper,
 		currentKey:   k,
@@ -178,24 +180,21 @@ func newMemTableIterator(ele *skiplist.Element, upper KeyBound) *MemTableIterato
 	return m
 }
 
-func CreateMemTableIterator(list *skiplist.SkipList, lower, upper KeyBound) *MemTableIterator {
+func CreateMemTableIterator(m *MemTable, lower, upper KeyBound) *MemTableIterator {
+	m.rwLock.RLock()
+	defer m.rwLock.RUnlock()
 	if lower.Type == Unbounded {
-		return newMemTableIterator(list.Front(), upper)
+		return newMemTableIterator(m, m.skipMap.Front(), upper)
 	} else if lower.Type == Included {
-		return newMemTableIterator(list.Find(lower.Val), upper)
+		return newMemTableIterator(m, m.skipMap.Find(lower.Val), upper)
 	} else {
-		ele := list.Find(lower.Val)
+		l := m.skipMap
+		ele := l.Find(lower.Val)
 		if ele != nil && ele.Key().(KeyBytes).Compare(lower.Val) == 0 {
 			ele = ele.Next()
 		}
-		return newMemTableIterator(ele, upper)
+		return newMemTableIterator(m, ele, upper)
 	}
-	//if lower.Type == Unbounded {
-	//	// return &MemTableIterator{ele: list.Front(), upper: upper}
-	//	return newMemTableIterator(list.Front(), upper)
-	//} else {
-	//	return newMemTableIterator(list.Find(lower.Val), upper)
-	//}
 }
 
 func (m *MemTableIterator) Value() []byte {
@@ -213,7 +212,9 @@ func (m *MemTableIterator) IsValid() bool {
 }
 
 func (m *MemTableIterator) Next() error {
+	m.memtable.rwLock.RLock()
 	m.ele = m.ele.Next()
+	m.memtable.rwLock.RUnlock()
 	if m.ele != nil {
 		if m.upper.Type == Unbounded {
 			m.currentKey, m.currentValue = entryToKeyAndValue(m.ele)

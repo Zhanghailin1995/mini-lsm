@@ -37,7 +37,14 @@ func TestTask3CompactionIntegration(t *testing.T) {
 	}
 	assert.True(t, len(storage.inner.ReadState().l0SsTables) > 1)
 	assert.NoError(t, storage.ForceFullCompaction())
+	assert.NoError(t, storage.Sync())
+	println(storage.inner.state.memTable.wal.cnt)
+	println(storage.inner.state.memTable.wal.size)
+	println(storage.inner.state.memTable.wal.file.Name())
+	//println(atomic.LoadUint64(&x))
+	//println(atomic.LoadInt32(&y))
 	storage.DumpStructure()
+
 	dumpFilesInDir(dir)
 	assert.True(t, len(storage.inner.ReadState().l0SsTables) == 0)
 	assert.True(t, len(storage.inner.ReadState().levels) == 1)
@@ -56,6 +63,7 @@ func TestTask3CompactionIntegration(t *testing.T) {
 		}
 	}
 	assert.NoError(t, storage.ForceFullCompaction())
+	assert.NoError(t, storage.Sync())
 	storage.DumpStructure()
 	dumpFilesInDir(dir)
 	assert.True(t, len(storage.inner.ReadState().l0SsTables) == 0)

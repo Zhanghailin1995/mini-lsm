@@ -11,6 +11,7 @@ import (
 func TestTask1FullCompaction(t *testing.T) {
 	dir := t.TempDir()
 	storage := utils.Unwrap(OpenLsmStorageInner(dir, DefaultForWeek1Test()))
+	txn, _ := storage.NewTxn()
 	assert.NoError(t, storage.Put([]byte("0"), []byte("v1")))
 	Sync(storage)
 	assert.NoError(t, storage.Put([]byte("0"), []byte("v2")))
@@ -55,6 +56,8 @@ func TestTask1FullCompaction(t *testing.T) {
 	iter = ReadLsmStorageState(storage, func(state *LsmStorageState) *MergeIterator {
 		return ConstructMergeIteratorOverStorage(state)
 	})
+
+	//PrintIter(iter)
 
 	if TsEnabled {
 		CheckIterResultByKey1(t, iter, []StringKeyValuePair{
@@ -127,7 +130,7 @@ func TestTask1FullCompaction(t *testing.T) {
 			{"2", "v3"},
 		})
 	}
-
+	txn.End()
 	assert.NoError(t, storage.Close())
 
 }

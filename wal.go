@@ -16,6 +16,8 @@ type Wal struct {
 	w    *bufio.Writer
 	file *os.File
 	mu   sync.Mutex
+	cnt  int
+	size int
 }
 
 func NewWal(p string) (*Wal, error) {
@@ -28,6 +30,8 @@ func NewWal(p string) (*Wal, error) {
 	return &Wal{
 		w:    bufWriter,
 		file: file,
+		cnt:  0,
+		size: 0,
 	}, nil
 }
 
@@ -90,6 +94,7 @@ func RecoverWal(p string, skiplist *skiplist.SkipList) (*Wal, error) {
 }
 
 func (w *Wal) Put(k KeyBytes, v []byte) error {
+	//fmt.Printf("Put wal %s\n", w.file.Name())
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	buf := make([]byte, 2+k.RawLen()+2+len(v)+4)
@@ -99,10 +104,19 @@ func (w *Wal) Put(k KeyBytes, v []byte) error {
 	copy(buf[2:], k.Val)
 	// put ts
 	binary.BigEndian.PutUint64(buf[2+len(k.Val):], k.Ts)
+	// put val len
 	binary.BigEndian.PutUint16(buf[2+k.RawLen():], uint16(len(v)))
+	// put val
 	copy(buf[2+k.RawLen()+2:], v)
 	checksum := utils.Crc32(buf[:len(buf)-4])
 	binary.BigEndian.PutUint32(buf[len(buf)-4:], checksum)
+	//if strings.Contains(w.file.Name(), "00038.wal") {
+	//	atomic.AddUint64(&x, uint64(len(buf)))
+	//	atomic.AddInt32(&y, 1)
+	//	println(string(k.KeyRef()))
+	//}
+	w.cnt++
+	w.size += len(buf)
 	for {
 		n, err := w.w.Write(buf)
 		if errors.Is(err, io.ErrShortWrite) {
@@ -113,6 +127,11 @@ func (w *Wal) Put(k KeyBytes, v []byte) error {
 			return err
 		}
 		break
+	}
+	// do we need flush?
+	err := w.w.Flush()
+	if err != nil && !errors.Is(err, io.ErrShortWrite) {
+		return err
 	}
 	return nil
 }

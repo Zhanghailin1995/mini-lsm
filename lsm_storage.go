@@ -21,9 +21,14 @@ type MiniLsm struct {
 	flushShutdownDoneNotifier      chan struct{}
 	compactionShutdownNotifier     chan struct{}
 	compactionShutdownDoneNotifier chan struct{}
+	shutdown                       atomic.Bool
 }
 
 func (lsm *MiniLsm) Shutdown() error {
+	if !lsm.shutdown.CompareAndSwap(false, true) {
+		logrus.Warn("shutdown called multiple times")
+		return nil
+	}
 	err := lsm.inner.SyncDir()
 	if err != nil {
 		return err
@@ -85,6 +90,10 @@ func Open(p string, options *LsmStorageOptions) (*MiniLsm, error) {
 	inner.SpawnCompactionThread(lsm.compactionShutdownNotifier, lsm.compactionShutdownDoneNotifier)
 	inner.SpawnFlushThread(lsm.flushShutdownNotifier, lsm.flushShutdownDoneNotifier)
 	return lsm, nil
+}
+
+func (lsm *MiniLsm) AddCompactionFilter(filter CompactionFilter) {
+	lsm.inner.AddCompactionFilter(filter)
 }
 
 func (lsm *MiniLsm) Sync() error {
@@ -155,6 +164,8 @@ type LsmStorageInner struct {
 	compactionController *CompactionController
 	manifest             *Manifest
 	mvcc                 *LsmMvccInner
+	cfMutex              sync.Mutex
+	compactionFilters    []CompactionFilter
 }
 
 func (lsm *LsmStorageInner) ReadState() *LsmStorageState {
@@ -474,12 +485,29 @@ func OpenLsmStorageInner(p string, options *LsmStorageOptions) (*LsmStorageInner
 		options:              options,
 		manifest:             manifest,
 		mvcc:                 NewLsmMvccInner(lastCommitTs),
+		compactionFilters:    make([]CompactionFilter, 0),
 	}
 	err = storage.SyncDir()
 	if err != nil {
 		return nil, err
 	}
 	return storage, nil
+}
+
+func (lsm *LsmStorageInner) AddCompactionFilter(filter CompactionFilter) {
+	lsm.cfMutex.Lock()
+	defer lsm.cfMutex.Unlock()
+	lsm.compactionFilters = append(lsm.compactionFilters, filter)
+}
+
+func (lsm *LsmStorageInner) CompactionFilters() []CompactionFilter {
+	lsm.cfMutex.Lock()
+	defer lsm.cfMutex.Unlock()
+	filters := make([]CompactionFilter, len(lsm.compactionFilters))
+	for i, filter := range lsm.compactionFilters {
+		filters[i] = filter.Clone()
+	}
+	return filters
 }
 
 func (lsm *LsmStorageInner) Mvcc() *LsmMvccInner {
@@ -601,7 +629,9 @@ func (lsm *LsmStorageInner) ForceFlushNextImmMemtable() error {
 	{
 		lsm.rwLock.RLock()
 		if len(lsm.state.immMemTable) == 0 {
-			panic("no imm memtable to flush")
+			lsm.rwLock.RUnlock()
+			println("no imm memtable to flush")
+			return nil
 		}
 		flushMemtable = lsm.state.immMemTable[len(lsm.state.immMemTable)-1]
 		lsm.rwLock.RUnlock()
@@ -693,6 +723,32 @@ func (lsm *LsmStorageInner) pathOfWal(id uint32) string {
 
 func keyWithin(userKey []byte, tableBegin, tableEnd KeyBytes) bool {
 	return bytes.Compare(userKey, tableBegin.KeyRef()) >= 0 && bytes.Compare(userKey, tableEnd.KeyRef()) <= 0
+}
+
+const PrefixFilter uint8 = 1
+
+type CompactionFilter interface {
+	Type() uint8
+	IsCompactionFilter() bool
+	Clone() CompactionFilter
+}
+
+type PrefixCompactionFilter struct {
+	prefix []byte
+}
+
+func (p *PrefixCompactionFilter) Type() uint8 {
+	return PrefixFilter
+}
+
+func (p *PrefixCompactionFilter) IsCompactionFilter() bool {
+	return true
+}
+
+func (p *PrefixCompactionFilter) Clone() CompactionFilter {
+	return &PrefixCompactionFilter{
+		prefix: slices.Clone(p.prefix),
+	}
 }
 
 func (lsm *LsmStorageInner) Get(k []byte) ([]byte, error) {
@@ -817,7 +873,7 @@ func (d *DelOp) IsWriteOp() bool {
 	return true
 }
 
-func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
+func (lsm *LsmStorageInner) writeBatchInner(batch []WriteBatchRecord) (uint64, error) {
 	lsm.Mvcc().WriteLock.Lock()
 	defer lsm.Mvcc().WriteLock.Unlock()
 	ts := lsm.Mvcc().LatestCommitTs() + 1
@@ -831,14 +887,14 @@ func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
 			err := lsm.state.memTable.Put(KeyFromBytesWithTs(delOp.K, ts), []byte{})
 			if err != nil {
 				lsm.rwLock.RUnlock()
-				return err
+				return 0, err
 			}
 			size = lsm.state.memTable.ApproximateSize()
 			lsm.rwLock.RUnlock()
 
 			err = lsm.tryFreeze(size)
 			if err != nil {
-				return err
+				return 0, err
 			}
 		case Put:
 			putOp := record.(*PutOp)
@@ -850,33 +906,85 @@ func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
 			err := lsm.state.memTable.Put(KeyFromBytesWithTs(putOp.K, ts), putOp.V)
 			if err != nil {
 				lsm.rwLock.RUnlock()
-				return err
+				return 0, err
 			}
 			size = lsm.state.memTable.ApproximateSize()
 			lsm.rwLock.RUnlock()
 			err = lsm.tryFreeze(size)
 			if err != nil {
-				return err
+				return 0, err
 			}
 		}
 	}
 	lsm.Mvcc().UpdateCommitTs(ts)
+	return ts, nil
+}
+
+func (lsm *LsmStorageInner) WriteBatch(batch []WriteBatchRecord) error {
+	if !lsm.options.Serializable {
+		_, err := lsm.writeBatchInner(batch)
+		if err != nil {
+			return err
+		}
+	} else {
+		txn := lsm.Mvcc().NewTxn(lsm, lsm.options.Serializable)
+		for _, record := range batch {
+			switch record.Type() {
+			case Del:
+				delOp := record.(*DelOp)
+				txn.Delete(delOp.K)
+			case Put:
+				putOp := record.(*PutOp)
+				txn.Put(putOp.K, putOp.V)
+			}
+		}
+		err := txn.Commit()
+		if err != nil {
+			txn.End()
+			return err
+		}
+		txn.End()
+	}
 	return nil
 }
 
 func (lsm *LsmStorageInner) Put(key []byte, value []byte) error {
-	r := &PutOp{
-		K: key,
-		V: value,
+	if !lsm.options.Serializable {
+		r := &PutOp{
+			K: key,
+			V: value,
+		}
+		_, err := lsm.writeBatchInner([]WriteBatchRecord{r})
+		return err
+	} else {
+		txn := lsm.Mvcc().NewTxn(lsm, lsm.options.Serializable)
+		defer txn.End()
+		txn.Put(key, value)
+		err := txn.Commit()
+		if err != nil {
+			return err
+		}
 	}
-	return lsm.WriteBatch([]WriteBatchRecord{r})
+	return nil
 }
 
 func (lsm *LsmStorageInner) Delete(key []byte) error {
-	r := &DelOp{
-		K: key,
+	if !lsm.options.Serializable {
+		r := &DelOp{
+			K: key,
+		}
+		_, err := lsm.writeBatchInner([]WriteBatchRecord{r})
+		return err
+	} else {
+		txn := lsm.Mvcc().NewTxn(lsm, lsm.options.Serializable)
+		defer txn.End()
+		txn.Delete(key)
+		err := txn.Commit()
+		if err != nil {
+			return err
+		}
 	}
-	return lsm.WriteBatch([]WriteBatchRecord{r})
+	return nil
 }
 
 func rangeOverlap(userBegin, userEnd BytesBound, tableBegin, tableEnd KeyBytes) bool {

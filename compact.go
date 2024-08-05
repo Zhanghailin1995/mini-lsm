@@ -123,9 +123,12 @@ func (lsm *LsmStorageInner) compactGenerateSstFromIter(iter StorageIterator, com
 	var builder *SsTableBuilder = nil
 	newSst := make([]*SsTable, 0)
 	watermark := lsm.Mvcc().Watermark()
+	println("watermark: ", watermark)
 	lastKey := make([]byte, 0)
 	// 这个参数的作用是记录一个key如果有多个版本，那么他的最新版本是不是在watermark之下，如果是，也是要保留的
 	firstKeyBelowWatermark := false
+	compactionFilters := lsm.CompactionFilters()
+outer:
 	for iter.IsValid() {
 		if builder == nil {
 			builder = NewSsTableBuilder(lsm.options.BlockSize)
@@ -173,16 +176,33 @@ func (lsm *LsmStorageInner) compactGenerateSstFromIter(iter StorageIterator, com
 			continue
 		}
 
-		if sameAsLastKey && iter.Key().(KeyBytes).Ts <= watermark {
-			if !firstKeyBelowWatermark {
+		if iter.Key().(KeyBytes).Ts <= watermark {
+			if sameAsLastKey && !firstKeyBelowWatermark {
 				err := iter.Next()
 				if err != nil {
 					return nil, err
 				}
 				continue
 			}
+
 			firstKeyBelowWatermark = false
+			if len(compactionFilters) > 0 {
+				for _, filter := range compactionFilters {
+					switch filter.Type() {
+					case PrefixFilter:
+						pf := filter.(*PrefixCompactionFilter)
+						keyRef := iter.Key().KeyRef()
+						if len(keyRef) >= len(pf.prefix) && slices.Equal(keyRef[:len(pf.prefix)], pf.prefix) {
+							if err := iter.Next(); err != nil {
+								return nil, err
+							}
+							continue outer
+						}
+					}
+				}
+			}
 		}
+
 		if builder.EstimatedSize() >= int(lsm.options.TargetSstSize) && !sameAsLastKey {
 			sstId := lsm.getNextSstId()
 			oldBuilder := builder
@@ -430,11 +450,11 @@ func (lsm *LsmStorageInner) ForceFullCompaction() error {
 			L1Sstables: l1SsTables,
 		},
 	}
+	fmt.Printf("force full compaction: l0_sstables: %v, l1_sstables: %v\n", l0SsTables, l1SsTables)
 	ssts, err := lsm.compact(compactionTask)
 	if err != nil {
 		return err
 	}
-
 	removeSsts := lsm.updateState(ssts, l0SsTables, l1SsTables)
 	err = lsm.removeCompactedSst(removeSsts)
 	if err != nil {

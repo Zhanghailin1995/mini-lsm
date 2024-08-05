@@ -10,11 +10,11 @@ import (
 )
 
 func KeyOfW1D7(idx uint32) []byte {
-	return []byte(fmt.Sprintf("key_%10d", idx*5))
+	return []byte(fmt.Sprintf("key_%010d", idx*5))
 }
 
 func ValueOfW1D7(idx uint32) []byte {
-	return []byte(fmt.Sprintf("value_%10d", idx))
+	return []byte(fmt.Sprintf("value_%010d", idx))
 }
 
 func NumOfKeysW1D7() uint32 {
